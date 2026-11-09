@@ -26,8 +26,8 @@ const item = (id: number, over: Partial<Item> = {}): Item => ({
   ...over,
 });
 
-const idsInOrder = (items: Item[], sjf: boolean) =>
-  [...items].sort((a, b) => compareQueueOrder(a, b, sjf)).map(i => i.id);
+const idsInOrder = (items: Item[], sjf: boolean, workingSecondsLeft?: number) =>
+  [...items].sort((a, b) => compareQueueOrder(a, b, sjf, workingSecondsLeft)).map(i => i.id);
 
 describe('compareQueueOrder', () => {
   it('leaves the queue in position order when SJF is off', () => {
@@ -67,6 +67,18 @@ describe('compareQueueOrder', () => {
       item(2, { position: 2, print_time_seconds: 300 }),
     ];
     expect(idsInOrder(items, true)).toEqual([1, 2]);
+  });
+
+  it('prioritizes jobs that fit, preserving the configured order within each group', () => {
+    const items = [
+      item(1, { print_time_seconds: 8000, been_jumped: true }),
+      item(2, { print_time_seconds: null }),
+      item(3, { print_time_seconds: 3600 }),
+      item(4, { print_time_seconds: 1800 }),
+    ];
+    expect(idsInOrder(items, false, 3600)).toEqual([3, 4, 1, 2]);
+    expect(idsInOrder(items, true, 3600)).toEqual([4, 3, 1, 2]);
+    expect(idsInOrder(items, false, 0)).toEqual([1, 2, 3, 4]);
   });
 
   it('falls back to position when two prints are the same length', () => {

@@ -29,6 +29,7 @@ from backend.app.core.printer_scope import PrinterScope
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.settings import ADMIN_ONLY_SETTING_KEYS, AppSettings, AppSettingsUpdate
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.services import camera_light
 from backend.app.services.secret_fields import SETTINGS_SECRETS, SecretConfigError, mask_fields, merge_partial
 
@@ -305,6 +306,8 @@ async def _build_settings_response(db: AsyncSession, is_api_key: bool = False, m
                 settings_dict[setting.key] = float(setting.value)
             except (TypeError, ValueError):
                 settings_dict[setting.key] = None
+        elif setting.key == "queue_working_hours":
+            settings_dict[setting.key] = WorkingHours.from_storage(setting.value)
         elif setting.key == "default_printer_id":
             settings_dict[setting.key] = int(setting.value) if setting.value and setting.value != "None" else None
         elif setting.key == "open_in_slicer":
@@ -488,8 +491,10 @@ async def update_settings(
             price_source_changed = True
 
     for key, value in update_data.items():
-        # Convert value to string for storage
-        await set_setting(db, key, _as_stored_setting(value))
+        if key == "queue_working_hours":
+            await set_setting(db, key, json.dumps(value))
+        else:
+            await set_setting(db, key, _as_stored_setting(value))
 
     await db.commit()
     # Expire all objects to ensure fresh reads after commit
@@ -697,6 +702,8 @@ _UI_FLAG_FIELDS: tuple[str, ...] = (
     # all to their defaults (with billing on, the print dialog hid the cost
     # centre picker and the print was then refused for lacking one).
     "queue_shortest_first",
+    "queue_working_hours",
+    "queue_working_hours_active_until",
     "use_slicer_api",
     "open_in_slicer",
     "preferred_slicer",

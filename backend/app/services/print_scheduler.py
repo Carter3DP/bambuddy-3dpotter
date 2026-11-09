@@ -11,10 +11,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import delete, false, func, or_, select, true, update
+from sqlalchemy import SQLColumnExpression, case, delete, false, func, or_, select, true, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,6 +33,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.services import drying_preflight, kprofile_drift, print_dispatch_context, stock_forecast
 from backend.app.services.bambu_ftp import (
     FtpFailureKind,
@@ -1658,59 +1659,36 @@ class PrintScheduler:
             # Check if shortest-job-first scheduling is enabled
             sjf_enabled = await self._get_bool_setting(db, "queue_shortest_first")
 
-            # Get all pending items in the one order the queue page shows them
-            # in (#3200). The first eligible item takes a printer, so this order
-            # decides who wins a printer that a pinned job and an "Any <model>"
-            # job both want. It used to start with ``printer_id``, which made the
-            # lane outrank the position: SQLite sorts NULL first, so model-based
-            # jobs always won; PostgreSQL sorts it last, so pinned jobs did.
-            # Neither is what the user dragged into place.
+            # One order across pinned and model-based jobs (#3200). During
+            # working hours, try jobs estimated to fit before closing first.
+            # Keep the configured order within both groups, so a printer that
+            # has no eligible fitting job can still take its normal next job.
+            hours = WorkingHours.from_storage(await self._get_setting(db, "queue_working_hours"))
+            now = datetime.now(timezone.utc)
+            deadline = hours.active_until(now)
+            duration = PrintQueueItem.print_time_seconds
+            order: list[SQLColumnExpression[Any]] = []
+            if deadline is not None:
+                seconds_left = (deadline - now).total_seconds()
+                order.append(case(((duration > 0) & (duration <= seconds_left), 0), else_=1))
             if sjf_enabled:
-                # SJF: items already jumped get top priority (starvation guard),
-                # then sort by print_time ascending. Items with no print time go
-                # last, and position breaks ties.
-                result = await db.execute(
-                    select(PrintQueueItem)
-                    .where(PrintQueueItem.status == "pending")
-                    # Never re-select a row a dispatch worker has already claimed
-                    # (#2615) — belt-and-suspenders with the _inflight exclusion
-                    # below, and the guard that lets an orphaned claim be ignored
-                    # until startup reconciliation clears it.
-                    .where(PrintQueueItem.dispatching_at.is_(None))
-                    # archive/library_file are read by the cross-model gate
-                    # (#2578); eager-load once per pass instead of a lazy-load
-                    # (which would raise in async) per item.
-                    .options(
-                        selectinload(PrintQueueItem.archive),
-                        selectinload(PrintQueueItem.library_file),
-                        # Cross-model candidates (#671), plus each candidate's file
-                        # for the same cross-model gate. Lazy-loading either would
-                        # raise in async.
-                        selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
-                    )
-                    .order_by(
-                        PrintQueueItem.been_jumped.desc(),
-                        PrintQueueItem.print_time_seconds.asc().nullslast(),
-                        PrintQueueItem.position,
-                        PrintQueueItem.id,
-                    )
+                # Keep the starvation guard and sort unknown durations last.
+                order.extend((PrintQueueItem.been_jumped.desc(), duration.asc().nullslast()))
+            order.extend((PrintQueueItem.position, PrintQueueItem.id))
+
+            result = await db.execute(
+                select(PrintQueueItem)
+                .where(PrintQueueItem.status == "pending")
+                # Skip rows already claimed by a dispatch worker (#2615).
+                .where(PrintQueueItem.dispatching_at.is_(None))
+                # Eager-load files for the cross-model gate (#2578).
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
                 )
-            else:
-                result = await db.execute(
-                    select(PrintQueueItem)
-                    .where(PrintQueueItem.status == "pending")
-                    # Skip rows already claimed by a dispatch worker (#2615).
-                    .where(PrintQueueItem.dispatching_at.is_(None))
-                    .options(
-                        selectinload(PrintQueueItem.archive),
-                        selectinload(PrintQueueItem.library_file),
-                        # Cross-model candidates (#671), plus each candidate's file
-                        # for the same cross-model gate. Lazy-loading either would
-                        # raise in async.
-                        selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
-                    )
-                    .order_by(PrintQueueItem.position, PrintQueueItem.id)
-                )
+                .order_by(*order)
+            )
             items = list(result.scalars().all())
 
             # Drop rows whose upload is still in flight from an earlier pass

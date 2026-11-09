@@ -91,6 +91,38 @@ describe('SettingsPage', () => {
     );
   });
 
+  it('saves the enabled working hours and both times from Workflow settings', async () => {
+    window.history.replaceState({}, '', '/settings?tab=queue');
+    const save = vi.fn();
+    server.use(
+      http.get('/api/v1/settings/', () => HttpResponse.json({
+        ...mockSettings,
+        external_url: window.location.origin,
+        queue_working_hours: { enabled: false, start: '08:30', end: '16:30' },
+      })),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json();
+        save(body);
+        return HttpResponse.json({ ...mockSettings, ...body });
+      }),
+    );
+    render(<SettingsPage />);
+
+    const toggle = await screen.findByRole('checkbox', { name: 'Working Hours' });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    const start = screen.getByLabelText('Start time');
+    const end = screen.getByLabelText('End time');
+    expect(start).toHaveValue('08:30');
+    expect(end).toHaveValue('16:30');
+
+    fireEvent.change(start, { target: { value: '22:00' } });
+    fireEvent.change(end, { target: { value: '06:30' } });
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+      queue_working_hours: { enabled: true, start: '22:00', end: '06:30' },
+    })));
+  });
+
   describe('rendering', () => {
     it('opens notification settings from the OctoEverywhere readiness link', async () => {
       window.history.replaceState({}, '', '/settings?tab=failure-detection');

@@ -148,6 +148,8 @@ class TestWhatItExposes:
             "currency",
             "check_updates",
             "queue_shortest_first",
+            "queue_working_hours",
+            "queue_working_hours_active_until",
             "use_slicer_api",
             "open_in_slicer",
             "preferred_slicer",

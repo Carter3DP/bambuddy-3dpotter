@@ -1596,6 +1596,8 @@ export interface AppSettings {
   require_plate_clear: boolean;
   // Shortest job first scheduling
   queue_shortest_first: boolean;
+  queue_working_hours: { enabled: boolean; start: string; end: string };
+  queue_working_hours_active_until: string | null;
   // How many printers the queue may upload to at once (#2555). 1 restores the
   // old strictly-serial behaviour, where every printer waited out every other
   // printer's transfer.
@@ -1656,7 +1658,7 @@ export interface AppSettings {
   location_sensor_alert_defaults: string;
 }
 
-export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured'>>;
+export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured' | 'queue_working_hours_active_until'>>;
 
 // Settings as a page sees them: everything from GET /settings for a user who
 // may read it, otherwise the subset /settings/ui-preferences and

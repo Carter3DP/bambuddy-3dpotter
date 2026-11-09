@@ -10,12 +10,18 @@ import { useAuth } from '../contexts/AuthContext';
  * that permission instead; everyone else keeps the full settings, under the
  * same query key as before.
  */
-export function useUiSettings(options: { enabled?: boolean; staleTime?: number } = {}) {
+export function useUiSettings({ refreshWorkingHours = false, ...options }: {
+  enabled?: boolean;
+  staleTime?: number;
+  refreshWorkingHours?: boolean;
+} = {}) {
   const { hasPermission } = useAuth();
   const readsAll = hasPermission('settings:read');
   return useQuery<UiSettings>({
     queryKey: readsAll ? ['settings'] : ['ui-settings'],
     queryFn: readsAll ? () => api.getSettings() : () => api.getUiSettings(),
+    refetchInterval: (query) =>
+      refreshWorkingHours && query.state.data?.queue_working_hours?.enabled ? 15000 : false,
     ...options,
   });
 }

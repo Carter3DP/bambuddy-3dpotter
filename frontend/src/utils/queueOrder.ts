@@ -1,7 +1,8 @@
 /**
  * The order the scheduler will actually dispatch pending queue items in.
  *
- * The backend decides this in SQL (`print_scheduler.check_queue`):
+ * The backend decides this in SQL (`print_scheduler.check_queue`). During
+ * working hours, jobs that fit before closing come first. Each group uses:
  *
  *     ORDER BY been_jumped DESC,
  *              print_time_seconds ASC NULLS LAST,
@@ -45,14 +46,22 @@ export function queueLaneKey(item: OrderableQueueItem): string {
  * Order two pending items the way the scheduler takes them, whichever printer
  * or model each is queued for.
  *
- * @param sjfEnabled the `queue_shortest_first` setting. When off, the
- *                   scheduler orders by position alone and so does this.
+ * @param sjfEnabled the `queue_shortest_first` setting.
+ * @param workingSecondsLeft seconds until the active working window closes.
  */
 export function compareQueueOrder(
   a: OrderableQueueItem,
   b: OrderableQueueItem,
   sjfEnabled: boolean,
+  workingSecondsLeft = 0,
 ): number {
+  if (workingSecondsLeft > 0) {
+    const fits = ({ print_time_seconds: seconds }: OrderableQueueItem) =>
+      seconds != null && seconds > 0 && seconds <= workingSecondsLeft;
+    const byFit = Number(fits(b)) - Number(fits(a));
+    if (byFit !== 0) return byFit;
+  }
+
   if (sjfEnabled) {
     // Starvation guard: an item something else was allowed to jump ahead of
     // goes first next time, whatever the print times say.

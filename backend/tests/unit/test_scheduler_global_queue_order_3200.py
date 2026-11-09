@@ -13,6 +13,7 @@ These run on SQLite, where the "Any" jobs used to win.
 """
 
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -101,7 +102,7 @@ async def _item(ctx, item_id):
         return (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one()
 
 
-async def _run(ctx, *, idle_printers):
+async def _run(ctx, *, idle_printers, now=None):
     """One check_queue pass; returns {item_id: printer_id} for what went out."""
     scheduler = PrintScheduler()
     launched = MagicMock()
@@ -138,6 +139,9 @@ async def _run(ctx, *, idle_printers):
         patch.object(scheduler, "_launch_uploads", launched),
     ]
     with ExitStack() as stack:
+        if now is not None:
+            clock = stack.enter_context(patch("backend.app.services.print_scheduler.datetime", wraps=datetime))
+            clock.now.return_value = now
         for p in patches:
             stack.enter_context(p)
         await scheduler.check_queue()
@@ -249,3 +253,26 @@ class TestShortestJobFirstAcrossLanes:
 
         await _run(ctx, idle_printers={1})
         assert (await _item(ctx, other_model)).been_jumped is False
+
+
+@pytest.mark.parametrize(
+    ("hour", "later_time", "manual_start", "expected_position"),
+    [
+        (8, 5 * 3600, False, 1),  # before opening
+        (9, 5 * 3600, False, 2),  # fits before closing
+        (9, 8 * 3600, False, 1),  # neither job fits
+        (9, 5 * 3600, True, 1),  # fitting job is staged
+        (9, None, False, 1),  # unknown duration
+        (9, 0, False, 1),  # zero is not a usable estimate
+        (17, 5 * 3600, False, 1),  # after closing
+    ],
+)
+async def test_working_hours_dispatch(ctx, monkeypatch, hour, later_time, manual_start, expected_position):
+    monkeypatch.setenv("TZ", "UTC")
+    await _set(ctx, "queue_working_hours", '{"enabled":true,"start":"08:30","end":"16:30"}')
+    first = await _pinned(ctx, 1, print_time=16 * 3600)
+    second = await _any(ctx, 2, print_time=later_time, manual_start=manual_start)
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+
+    expected = first if expected_position == 1 else second
+    assert await _run(ctx, idle_printers={1}, now=now) == {expected: 1}

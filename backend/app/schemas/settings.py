@@ -1,11 +1,13 @@
 import json
 import re
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, computed_field, field_validator
 
 from backend.app.schemas.print_queue import TriState
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.utils.printer_models import MAX_CHAMBER_TEMP_C
 
 # Outbound service URLs validated on save, so a bad value is rejected at
@@ -491,6 +493,7 @@ class AppSettings(BaseModel):
         default=False,
         description="Shortest Job First — scheduler prioritizes shorter print jobs over longer ones",
     )
+    queue_working_hours: WorkingHours = Field(default_factory=lambda: WorkingHours.from_storage(None))
     queue_max_concurrent_uploads: int = Field(
         default=4,
         ge=1,
@@ -727,6 +730,11 @@ class AppSettings(BaseModel):
         description="JSON object with 'order' key containing array of sidebar item IDs (empty = no default)",
     )
 
+    @computed_field
+    @property
+    def queue_working_hours_active_until(self) -> datetime | None:
+        return self.queue_working_hours.active_until(datetime.now(timezone.utc))
+
     # The settings page sends every field back on each save, and the update
     # schema accepts only these values. A stored value outside them would make
     # every later save fail, so it is read back as what the service treats it as.
@@ -854,6 +862,7 @@ class AppSettingsUpdate(BaseModel):
     finance_budget_reset_timezone: str | None = None
     require_plate_clear: bool | None = None
     queue_shortest_first: bool | None = None
+    queue_working_hours: WorkingHours | None = None
     queue_max_concurrent_uploads: int | None = Field(default=None, ge=1, le=16)
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None

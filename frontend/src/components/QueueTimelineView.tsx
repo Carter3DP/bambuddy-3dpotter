@@ -38,6 +38,7 @@ interface QueueTimelineViewProps {
    *  order depends on it, so without it the timeline drew a queue the
    *  scheduler had no intention of running (#3043). */
   sjfEnabled: boolean;
+  workingSecondsLeft?: number;
   onItemClick: (item: PrintQueueItem) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }
@@ -64,6 +65,7 @@ export function QueueTimelineView({
   printers,
   printerStatuses,
   sjfEnabled,
+  workingSecondsLeft,
   onItemClick,
   t,
 }: QueueTimelineViewProps) {
@@ -146,7 +148,7 @@ export function QueueTimelineView({
 
     const sixMonthsFromNow = Date.now() + 180 * 24 * HOUR_MS;
     for (const [lk, items] of pendingByLaneKey) {
-      items.sort((a, b) => compareQueueOrder(a, b, sjfEnabled));
+      items.sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));
       const hasActive = lanesWithActive.has(lk);
       // A lane is timelineable when EITHER it has an active print (chain
       // forecast off its end) OR its first pending item is scheduled (a
@@ -173,7 +175,7 @@ export function QueueTimelineView({
       }
     }
     return result;
-  }, [queueItems, printerStatuses, nowMs, sjfEnabled]);
+  }, [queueItems, printerStatuses, nowMs, sjfEnabled, workingSecondsLeft]);
 
   // Lanes: every printer + every distinct target_model with queue activity
   // + an "unassigned" lane if needed. Printers that have NO events queued
