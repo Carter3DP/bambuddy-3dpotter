@@ -5635,6 +5635,9 @@ export function SettingsPage() {
                   <p className="text-xs text-bambu-gray mt-0.5">
                     {t('settings.keepBedWarmDesc', 'While awaiting plate-clear, hold the bed at the keep-warm temperature below so the chamber stays hot — or at the next print\'s own bed temperature when that is higher. Only applies when the next print needs chamber heating (ASA, ABS, PA, PC etc.). Requires plate-clear confirmation to be enabled.')}
                   </p>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.keepBedWarmWorkingHours', 'Only active during Working Hours. Enable Working Hours under Queue & Dispatch to use this setting.')}
+                  </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input

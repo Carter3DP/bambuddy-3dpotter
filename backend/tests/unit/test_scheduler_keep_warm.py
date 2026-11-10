@@ -10,7 +10,7 @@ the chamber's heat source here, not a print surface, so an item with no
 bed_temperature metadata still gets a hold — what gates the feature is
 whether the next print needs chamber heat.
 
-Gates the whole block on three settings AND-ed together
+Requires active Working Hours and three settings AND-ed together
 (`queue_keep_bed_warm`, `require_plate_clear`, `preheat_enabled`) so a user
 who turns off the plate-clear or preheat gate stops holding heat without
 having to also toggle keep-warm.  Bounded by `queue_keep_warm_max_minutes`, and
@@ -109,6 +109,7 @@ async def _run(
     dispatch_ids=None,
     busy_printers=None,
     require_plate_clear=True,
+    within_working_hours=True,
     bool_settings=None,
     hold_temp=HOLD_TEMP,
     max_hold_minutes=MAX_HOLD_MINUTES,
@@ -136,11 +137,13 @@ async def _run(
         patch("backend.app.services.print_scheduler.time") as t,
     ):
         t.monotonic.return_value = NOW
-        await scheduler._apply_keep_warm(db, items, dispatch_ids, busy_printers, require_plate_clear)
+        await scheduler._apply_keep_warm(
+            db, items, dispatch_ids, busy_printers, require_plate_clear, within_working_hours=within_working_hours
+        )
 
 
 # ---------------------------------------------------------------------------
-# Gating: all three settings AND-ed together
+# Gating: working hours and all three settings
 # ---------------------------------------------------------------------------
 
 
@@ -179,6 +182,31 @@ async def test_keep_warm_skips_when_preheat_disabled(scheduler):
         await _run(scheduler, bool_settings=_bool_settings(preheat_enabled=False))
 
     client.set_bed_temperature.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keep_warm_releases_at_closing_and_does_not_restart(scheduler):
+    client = _make_client()
+    with patch("backend.app.services.print_scheduler.printer_manager") as pm:
+        state = _make_state()
+        pm.get_status.return_value = state
+        pm.get_client.return_value = client
+
+        await _run(scheduler, within_working_hours=False)
+        client.set_bed_temperature.assert_not_called()
+
+        await _run(scheduler)
+        client.set_bed_temperature.assert_called_once_with(BED_TARGET)
+        state.temperatures["bed_target"] = BED_TARGET
+
+        await _run(scheduler, within_working_hours=False)
+        client.set_bed_temperature.assert_called_with(0)
+        assert PRINTER_ID not in scheduler._keep_warm
+
+        state.temperatures["bed_target"] = 0
+        client.set_bed_temperature.reset_mock()
+        await _run(scheduler, within_working_hours=False)
+        client.set_bed_temperature.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

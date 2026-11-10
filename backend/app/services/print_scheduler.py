@@ -2665,7 +2665,12 @@ class PrintScheduler:
             # was, and the next tick tries again.
             try:
                 await self._apply_keep_warm(
-                    db, items, dispatch_ids, busy_printers - backoff_printers, require_plate_clear
+                    db,
+                    items,
+                    dispatch_ids,
+                    busy_printers - backoff_printers,
+                    require_plate_clear,
+                    within_working_hours=hours.active_until(datetime.now(timezone.utc)) is not None,
                 )
             except Exception as e:
                 logger.warning("Keep-warm pass failed, continuing with dispatch: %s", e, exc_info=True)
@@ -7194,8 +7199,8 @@ class PrintScheduler:
         candidate set), and from ``check_queue``'s no-pending-items early
         return (with an empty candidate set) so orphaned holds still get
         released when the queue empties. Also called with an empty candidate
-        set when any of the three gate settings toggles off, so a printer
-        whose feature was disabled mid-hold gets its bed released.
+        set when a gate setting toggles off or working hours end, so an
+        existing hold gets released.
 
         Printers being dispatched this tick are excluded from the bed-off
         publish: ``_preheat_and_soak`` owns the bed from that tick on, so a
@@ -7226,8 +7231,10 @@ class PrintScheduler:
         dispatch_ids: list[int] | set[int],
         busy_printers: set[int],
         require_plate_clear: bool,
+        *,
+        within_working_hours: bool,
     ) -> None:
-        """Hold the bed warm on FINISH printers whose next queued item needs chamber heat.
+        """Hold the bed warm during working hours when the next item needs chamber heat.
 
         When a printer just finished a job (FINISH state) and the next queued
         item needs chamber heating, hold the bed hot so the chamber stays warm
@@ -7254,8 +7261,8 @@ class PrintScheduler:
         MQTT: publish is skipped when firmware already has the target.
 
         The release sweep runs BEFORE the engagement gate so a printer that
-        was owned by keep-warm still gets its bed released when any of the
-        three gate settings is toggled off mid-hold. The
+        was owned by keep-warm still gets its bed released when a gate
+        setting toggles off or working hours end mid-hold. The
         ``check_queue`` early-return-when-no-items path also calls
         ``_sweep_keep_warm`` directly to release orphaned holds.
         """
@@ -7266,7 +7273,7 @@ class PrintScheduler:
 
         keep_warm_enabled = await self._get_bool_setting(db, "queue_keep_bed_warm", default=False)
         preheat_on = await self._get_bool_setting(db, "preheat_enabled", default=False)
-        gate_open = keep_warm_enabled and require_plate_clear and preheat_on
+        gate_open = within_working_hours and keep_warm_enabled and require_plate_clear and preheat_on
 
         # Release sweep first — must run even when gate_open is False so a
         # printer owned by keep-warm when a gate toggles off gets released.

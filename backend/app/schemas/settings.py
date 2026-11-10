@@ -544,7 +544,7 @@ class AppSettings(BaseModel):
     queue_keep_bed_warm: bool = Field(
         default=False,
         description=(
-            "While a printer is in FINISH state awaiting plate-clear and the next queued item requires "
+            "During enabled Working Hours, while a printer awaits plate-clear in FINISH and the next item requires "
             "chamber heating, hold the bed hot so the chamber stays warm during the bed-clearing "
             "window. The bed is the chamber's heating element here: the hold target is "
             "queue_keep_warm_bed_temp, or the item's own bed_temperature when the slicer metadata "
