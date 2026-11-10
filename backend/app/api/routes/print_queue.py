@@ -61,7 +61,7 @@ from backend.app.schemas.print_queue import (
     QueueVariantCreate,
     QueueVariantSummary,
 )
-from backend.app.schemas.working_hours import WorkingHours
+from backend.app.schemas.working_hours import WORKING_HOURS_SNAPSHOT_KEY, WorkingHours, WorkingHoursQueueSnapshot
 from backend.app.services.filament_deficit import compute_deficit_for_queue_item
 from backend.app.services.filament_requirements import overrides_for_plate
 from backend.app.services.finance_budget import release_budget_reservation, validate_print_budget
@@ -814,7 +814,22 @@ async def list_queue(
 
     result = await db.execute(query)
     items = result.scalars().all()
-    return [_enrich_response(item) for item in items]
+    responses = [_enrich_response(item) for item in items]
+    if any(item.status == "pending" for item in items):
+        result = await db.execute(
+            select(Settings.key, Settings.value).where(
+                Settings.key.in_(("queue_working_hours", WORKING_HOURS_SNAPSHOT_KEY))
+            )
+        )
+        values = dict(result.tuples().all())
+        hours = WorkingHours.from_storage(values.get("queue_working_hours"))
+        ranks = WorkingHoursQueueSnapshot.ranks(
+            values.get(WORKING_HOURS_SNAPSHOT_KEY), hours, datetime.now(timezone.utc)
+        )
+        for response in responses:
+            if response.status == "pending":
+                response.working_hours_kept_position = ranks.get(response.id)
+    return responses
 
 
 HISTORY_STATUSES = ("completed", "failed", "skipped", "cancelled")

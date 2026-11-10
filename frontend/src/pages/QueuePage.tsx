@@ -2216,14 +2216,21 @@ export function QueuePage() {
   const workingHoursActive = workingSecondsLeft > 0;
   const workingHoursUntil = workingHoursActive ? Math.floor(workingDeadline / 1000) : undefined;
   const sjfEnabled = settings?.queue_shortest_first ?? false;
+  const hours = settings?.queue_working_hours;
+  const afterHoursOrder = !workingHoursActive && hours?.enabled && hours.start !== hours.end
+    ? hours.end_of_day
+    : undefined;
   const allPending = useMemo(() => queue?.filter(item => item.status === 'pending') ?? [], [queue]);
+  const automaticAfterHours = afterHoursOrder === 'longest_first' ||
+    (afterHoursOrder === 'keep' && allPending.some(item => item.working_hours_kept_position != null));
+  const showDispatchOrder = sjfEnabled || workingHoursActive || automaticAfterHours;
   const dispatchOrder = useMemo(
-    () => sortQueueItems(allPending, sjfEnabled, workingSecondsLeft, workingHoursUntil),
-    [allPending, sjfEnabled, workingSecondsLeft, workingHoursUntil],
+    () => sortQueueItems(allPending, sjfEnabled, workingSecondsLeft, workingHoursUntil, afterHoursOrder),
+    [allPending, sjfEnabled, workingSecondsLeft, workingHoursUntil, afterHoursOrder],
   );
 
   const pendingItems = useMemo(() => {
-    const items = (sjfEnabled || workingHoursActive ? dispatchOrder : allPending).filter(matchesLocationFilter);
+    const items = (showDispatchOrder ? dispatchOrder : allPending).filter(matchesLocationFilter);
 
     // Helper to get scheduled time as timestamp (ASAP/placeholder = 0 for earliest)
     const getScheduledTime = (item: PrintQueueItem): number => {
@@ -2235,7 +2242,7 @@ export function QueuePage() {
     };
 
     // When a dispatch preference is active, show the scheduler order.
-    if (sjfEnabled || workingHoursActive) {
+    if (showDispatchOrder) {
       return items;
     }
 
@@ -2255,7 +2262,7 @@ export function QueuePage() {
       }
       return pendingSortAsc ? cmp : -cmp;
     });
-  }, [allPending, dispatchOrder, pendingSortBy, pendingSortAsc, matchesLocationFilter, sjfEnabled, workingHoursActive]);
+  }, [allPending, dispatchOrder, pendingSortBy, pendingSortAsc, matchesLocationFilter, showDispatchOrder]);
 
   const workingHoursMovedIds = useMemo(() => {
     if (workingHoursUntil == null) return new Set<number>();
@@ -2507,7 +2514,7 @@ export function QueuePage() {
   // Outside that window, manual reorder uses the saved position view.
   const canReorderManually =
     hasPermission('queue:reorder') &&
-    (workingHoursActive || (pendingSortBy === 'position' && !sjfEnabled));
+    (workingHoursActive || (pendingSortBy === 'position' && !sjfEnabled && !automaticAfterHours));
 
   const rowItemIds = (row: QueueRow): number[] =>
     row.kind === 'item' ? [row.item.id] : row.items.map((i) => i.id);
@@ -3027,6 +3034,7 @@ export function QueuePage() {
           sjfEnabled={sjfEnabled}
           workingSecondsLeft={workingSecondsLeft}
           workingHoursUntil={workingHoursUntil}
+          afterHoursOrder={afterHoursOrder}
           onItemClick={(item) => {
             if (['completed', 'failed', 'skipped', 'cancelled'].includes(item.status)) {
               setRequeueItem(item);

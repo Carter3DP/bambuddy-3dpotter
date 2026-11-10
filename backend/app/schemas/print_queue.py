@@ -306,6 +306,7 @@ class PrintQueueItemResponse(BaseModel):
     working_hours_manual_position: bool = False
     working_hours_position: int | None = None
     working_hours_until: int | None = None
+    working_hours_kept_position: int | None = None
 
     # Auto-print G-code injection
     gcode_injection: bool = False

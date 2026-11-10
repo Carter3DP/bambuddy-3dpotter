@@ -121,6 +121,18 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
       queue_working_hours: { enabled: true, start: '22:00', end: '06:30' },
     })));
+
+    const closingBehavior = screen.getByRole('checkbox', { name: 'Change the queue at the end of the working day' });
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'After-hours queue order' }), 'longest_first');
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+      queue_working_hours: { enabled: true, start: '22:00', end: '06:30', end_of_day: 'longest_first' },
+    })));
+
+    await userEvent.click(closingBehavior);
+    expect(screen.queryByRole('combobox', { name: 'After-hours queue order' })).toBeNull();
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({
+      queue_working_hours: { enabled: true, start: '22:00', end: '06:30', end_of_day: 'keep' },
+    })));
   });
 
   describe('rendering', () => {

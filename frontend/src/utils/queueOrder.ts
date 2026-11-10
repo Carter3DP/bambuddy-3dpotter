@@ -17,6 +17,8 @@
  * entirely (#3043).
  */
 
+import type { WorkingHoursEndOfDay } from '../api/client';
+
 interface OrderableQueueItem {
   printer_id?: number | null;
   target_model?: string | null;
@@ -24,6 +26,7 @@ interface OrderableQueueItem {
   working_hours_manual_position?: boolean;
   working_hours_position?: number | null;
   working_hours_until?: number | null;
+  working_hours_kept_position?: number | null;
   print_time_seconds?: number | null;
   position: number;
   id?: number;
@@ -94,8 +97,18 @@ export function sortQueueItems<T extends OrderableQueueItem>(
   sjfEnabled: boolean,
   workingSecondsLeft: number,
   workingHoursUntil?: number,
+  afterHoursOrder?: WorkingHoursEndOfDay,
 ): T[] {
+  if (afterHoursOrder === 'longest_first') {
+    const duration = (item: T) => Math.max(0, item.print_time_seconds ?? 0);
+    return [...items].sort((a, b) => duration(b) - duration(a) || compareQueueOrder(a, b, false));
+  }
+
   const automaticOrder = [...items].sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));
+  if (afterHoursOrder === 'keep') {
+    const rank = (item: T) => item.working_hours_kept_position ?? Infinity;
+    return automaticOrder.sort((a, b) => rank(a) - rank(b));
+  }
   const reserved = (item: T) => hasWorkingHoursManualPosition(item, workingHoursUntil);
   if (!items.some(reserved)) return automaticOrder;
 

@@ -27,6 +27,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.services.print_scheduler import PrintScheduler
 
 
@@ -315,3 +316,31 @@ async def test_working_hours_manual_order_preserves_normal_positions(ctx, monkey
     now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
     ids = {"first": first, "fitting": fitting, "manual": manual}
     assert await _run(ctx, idle_printers={1}, now=now) == {ids[expected]: 1}
+
+
+@pytest.mark.parametrize(
+    ("enabled", "hour", "expected"), [(True, 17, "long"), (True, 9, "short"), (False, 17, "short")]
+)
+async def test_longest_job_first_only_applies_after_working_hours(ctx, monkeypatch, enabled, hour, expected):
+    monkeypatch.setenv("TZ", "UTC")
+    hours = WorkingHours(enabled=enabled, start="08:30", end="16:30", end_of_day="longest_first")
+    await _set(ctx, "queue_working_hours", hours.model_dump_json())
+    await _set(ctx, "queue_shortest_first", "true")
+    await _pinned(ctx, 1, print_time=None)
+    short = await _pinned(ctx, 2, print_time=3600)
+    long = await _any(ctx, 3, print_time=16 * 3600)
+
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+    assert await _run(ctx, idle_printers={1}, now=now) == {{"short": short, "long": long}[expected]: 1}
+
+
+async def test_keep_order_survives_scheduler_restart_and_expires_next_window(ctx, monkeypatch):
+    monkeypatch.setenv("TZ", "UTC")
+    hours = WorkingHours(enabled=True, start="08:30", end="16:30", end_of_day="keep")
+    await _set(ctx, "queue_working_hours", hours.model_dump_json())
+    long = await _pinned(ctx, 1, print_time=16 * 3600)
+    short = await _any(ctx, 2, print_time=5 * 3600)
+
+    assert await _run(ctx, idle_printers=set(), now=datetime(2026, 11, 9, 9, tzinfo=timezone.utc)) == {}
+    assert await _run(ctx, idle_printers={1}, now=datetime(2026, 11, 9, 17, tzinfo=timezone.utc)) == {short: 1}
+    assert await _run(ctx, idle_printers={1}, now=datetime(2026, 11, 10, 17, tzinfo=timezone.utc)) == {long: 1}

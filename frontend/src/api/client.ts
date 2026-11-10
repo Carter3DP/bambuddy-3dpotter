@@ -1596,7 +1596,7 @@ export interface AppSettings {
   require_plate_clear: boolean;
   // Shortest job first scheduling
   queue_shortest_first: boolean;
-  queue_working_hours: { enabled: boolean; start: string; end: string };
+  queue_working_hours: { enabled: boolean; start: string; end: string; end_of_day?: WorkingHoursEndOfDay };
   queue_working_hours_active_until: string | null;
   // How many printers the queue may upload to at once (#2555). 1 restores the
   // old strictly-serial behaviour, where every printer waited out every other
@@ -1657,6 +1657,8 @@ export interface AppSettings {
   // brings them back; see utils/locationSensorDefaults.ts.
   location_sensor_alert_defaults: string;
 }
+
+export type WorkingHoursEndOfDay = 'keep' | 'restore' | 'longest_first';
 
 export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured' | 'queue_working_hours_active_until'>>;
 
@@ -2882,6 +2884,7 @@ export interface PrintQueueItem {
   working_hours_manual_position?: boolean;
   working_hours_position?: number | null;
   working_hours_until?: number | null;
+  working_hours_kept_position?: number | null;
   // Auto-print G-code injection
   gcode_injection?: boolean;
   cleanup_library_after_dispatch?: boolean;

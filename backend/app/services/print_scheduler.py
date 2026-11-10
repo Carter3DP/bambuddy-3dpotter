@@ -33,7 +33,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
-from backend.app.schemas.working_hours import WorkingHours
+from backend.app.schemas.working_hours import WORKING_HOURS_SNAPSHOT_KEY, WorkingHours, WorkingHoursQueueSnapshot
 from backend.app.services import drying_preflight, kprofile_drift, print_dispatch_context, stock_forecast
 from backend.app.services.bambu_ftp import (
     FtpFailureKind,
@@ -1666,11 +1666,17 @@ class PrintScheduler:
             hours = WorkingHours.from_storage(await self._get_setting(db, "queue_working_hours"))
             now = datetime.now(timezone.utc)
             deadline = hours.active_until(now)
+            after_hours = hours.after_hours(now)
+            longest_first = after_hours and hours.end_of_day == "longest_first"
+            if longest_first:
+                sjf_enabled = False
             duration = PrintQueueItem.print_time_seconds
             order: list[SQLColumnExpression[Any]] = []
             if deadline is not None:
                 seconds_left = (deadline - now).total_seconds()
                 order.append(case(((duration > 0) & (duration <= seconds_left), 0), else_=1))
+            if longest_first:
+                order.append(case((duration > 0, duration)).desc().nullslast())
             if sjf_enabled:
                 # Keep the starvation guard and sort unknown durations last.
                 order.extend((PrintQueueItem.been_jumped.desc(), duration.asc().nullslast()))
@@ -1720,6 +1726,21 @@ class PrintScheduler:
                     )
                     automatic = iter(item for item in items if item.id not in reserved)
                     items = [item if item.id in reserved else next(automatic) for item in slots]
+
+            if hours.end_of_day == "keep" and items:
+                snapshot = await self._get_setting(db, WORKING_HOURS_SNAPSHOT_KEY)
+                if deadline is not None:
+                    saved = WorkingHoursQueueSnapshot(
+                        window=int(deadline.timestamp()), ids=[item.id for item in items]
+                    ).model_dump_json()
+                    if saved != snapshot:
+                        from backend.app.core.db_dialect import upsert_setting
+
+                        await upsert_setting(db, Settings, WORKING_HOURS_SNAPSHOT_KEY, saved)
+                elif ranks := WorkingHoursQueueSnapshot.ranks(snapshot, hours, now):
+                    if any(item.id in ranks for item in items):
+                        items.sort(key=lambda item: ranks.get(item.id, len(ranks)))
+                        sjf_enabled = False
 
             # Read plate-clear setting once per queue check. Default MUST be
             # False to match the schema (SettingsSchema.require_plate_clear

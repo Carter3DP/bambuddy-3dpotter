@@ -258,7 +258,7 @@ function clampPauseWarningMinutes(minutes: number | undefined): number {
   return Math.min(120, Math.max(1, Math.round(minutes || 5)));
 }
 
-const DEFAULT_WORKING_HOURS = { enabled: false, start: '08:30', end: '16:30' };
+const DEFAULT_WORKING_HOURS = { enabled: false, start: '08:30', end: '16:30', end_of_day: 'restore' } as const;
 
 export function SettingsPage() {
   const [cameraTokenRevision, setCameraTokenRevision] = useState(0);
@@ -1277,7 +1277,10 @@ export function SettingsPage() {
     const savedHours = baseline.queue_working_hours ?? DEFAULT_WORKING_HOURS;
     const editedHours = localSettings.queue_working_hours ?? DEFAULT_WORKING_HOURS;
     const workingHoursChanged =
-      savedHours.enabled !== editedHours.enabled || savedHours.start !== editedHours.start || savedHours.end !== editedHours.end;
+      savedHours.enabled !== editedHours.enabled ||
+      savedHours.start !== editedHours.start ||
+      savedHours.end !== editedHours.end ||
+      (savedHours.end_of_day ?? 'restore') !== (editedHours.end_of_day ?? 'restore');
 
     // Check if there are actual changes
     const hasChanges =
@@ -5489,7 +5492,7 @@ export function SettingsPage() {
             <CardContent className="space-y-3">
               <div className="flex items-center justify-between gap-4">
                 <p id="working-hours-description" className="text-xs text-bambu-gray">
-                  {t('settings.workingHoursDescription', 'Prioritize jobs estimated to finish by closing time. Outside this daily window, or when no eligible job fits, dispatch follows the normal queue order. Times use the Bambuddy server timezone (TZ).')}
+                  {t('settings.workingHoursDescription', 'Prioritize jobs estimated to finish by closing time. When no eligible job fits during this window, dispatch follows the normal queue order. Times use the Bambuddy server timezone (TZ).')}
                 </p>
                 <label className="relative inline-flex items-center cursor-pointer shrink-0">
                   <input
@@ -5523,6 +5526,38 @@ export function SettingsPage() {
                       />
                     </label>
                   ))}
+                  <label className="col-span-2 flex items-center gap-2 text-xs text-bambu-gray">
+                    <input
+                      type="checkbox"
+                      checked={workingHours.end_of_day !== 'keep'}
+                      onChange={(e) => updateSetting('queue_working_hours', {
+                        ...workingHours,
+                        end_of_day: e.target.checked ? 'restore' : 'keep',
+                      })}
+                      className="accent-bambu-green"
+                    />
+                    {t('settings.workingHoursEndOfDay', 'Change the queue at the end of the working day')}
+                  </label>
+                  {workingHours.end_of_day === 'keep' ? (
+                    <p className="col-span-2 text-xs text-bambu-gray">
+                      {t('settings.workingHoursKeepQueueHelp', 'Keep the last working-hours order for pending jobs until the next working window.')}
+                    </p>
+                  ) : (
+                    <label className="col-span-2 block text-xs text-bambu-gray">
+                      {t('settings.workingHoursAfterHoursOrder', 'After-hours queue order')}
+                      <select
+                        value={workingHours.end_of_day ?? 'restore'}
+                        onChange={(e) => updateSetting('queue_working_hours', {
+                          ...workingHours,
+                          end_of_day: e.target.value === 'longest_first' ? 'longest_first' : 'restore',
+                        })}
+                        className="mt-1 w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                      >
+                        <option value="restore">{t('settings.workingHoursRestoreQueue', 'Restore the queue')}</option>
+                        <option value="longest_first">{t('settings.workingHoursLongestJobFirst', 'Longest job first')}</option>
+                      </select>
+                    </label>
+                  )}
                 </div>
               )}
             </CardContent>
