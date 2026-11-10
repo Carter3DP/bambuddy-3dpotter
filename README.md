@@ -1,3 +1,9 @@
+<h1 align="center">Important:</h1><br>
+<p align="center">
+  <strong>This fork is maintained by 3DPotter.<br>
+  Please do not go to maziggy or the original fork for any issues that occur.</strong>
+</p>  
+
 <p align="center">
   <img src="static/img/bambuddy_logo_dark.png" alt="Bambuddy Logo" width="300">
 </p>
