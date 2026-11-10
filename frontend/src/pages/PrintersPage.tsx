@@ -2343,6 +2343,9 @@ function PrinterCard({
     return Array.from(ids);
   }, [status?.ams, status?.vt_tray, status?.nozzle_rack]);
 
+  const { data: queueSettings } = useUiSettings();
+  const colorMatchThreshold = queueSettings?.color_match_threshold ?? 0;
+
   // Collect loaded filament types for queue widget filtering
   const loadedFilamentTypes = useMemo(() => {
     const types = new Set<string>();
@@ -2390,21 +2393,21 @@ function PrinterCard({
     if (status?.ams) {
       for (const ams of status.ams) {
         for (const tray of ams.tray || []) {
-          if (tray.tray_type && tray.tray_color) {
-            const color = tray.tray_color.replace('#', '').toLowerCase().slice(0, 6);
+          if (tray.tray_type && (tray.tray_color || colorMatchThreshold === 100)) {
+            const color = (tray.tray_color || '').replace('#', '').toLowerCase().slice(0, 6);
             variants.add(`${tray.tray_type.toUpperCase()}:${color}:${tray.tray_info_idx || ''}`);
           }
         }
       }
     }
     for (const vt of status?.vt_tray ?? []) {
-      if (vt.tray_type && vt.tray_color) {
-        const color = vt.tray_color.replace('#', '').toLowerCase().slice(0, 6);
+      if (vt.tray_type && (vt.tray_color || colorMatchThreshold === 100)) {
+        const color = (vt.tray_color || '').replace('#', '').toLowerCase().slice(0, 6);
         variants.add(`${vt.tray_type.toUpperCase()}:${color}:${vt.tray_info_idx || ''}`);
       }
     }
     return variants;
-  }, [status?.ams, status?.vt_tray]);
+  }, [status?.ams, status?.vt_tray, colorMatchThreshold]);
 
   // Fetch cloud filament info for tooltips (name includes color, also has K value)
   const { data: filamentInfo } = useQuery({
@@ -2600,8 +2603,8 @@ function PrinterCard({
   // An empty Set means no filaments are loaded — jobs requiring specific types are incompatible.
   const queueCount = useMemo(() => {
     if (!queueItems?.length) return 0;
-    return filterCompatibleQueueItems(queueItems, loadedFilamentTypes, loadedFilaments, loadedVariants).length;
-  }, [queueItems, loadedFilamentTypes, loadedFilaments, loadedVariants]);
+    return filterCompatibleQueueItems(queueItems, loadedFilamentTypes, loadedFilaments, loadedVariants, colorMatchThreshold).length;
+  }, [queueItems, loadedFilamentTypes, loadedFilaments, loadedVariants, colorMatchThreshold]);
 
   // Fetch currently printing queue item to show who started it (Issue #206)
   const { data: printingQueueItems } = useQuery({
@@ -4560,6 +4563,7 @@ function PrinterCard({
                         loadedFilamentTypes={loadedFilamentTypes}
                         loadedFilaments={loadedFilaments}
                         loadedVariants={loadedVariants}
+                        colorMatchThreshold={colorMatchThreshold}
                         variant="panelExtension"
                       />
                     </div>

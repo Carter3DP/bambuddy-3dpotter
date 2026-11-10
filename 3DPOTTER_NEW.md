@@ -24,6 +24,10 @@ Turning off Working Hours itself returns the queue to normal ordering.
 
 PostgreSQL upgrades now align the Working Hours manual-position default with fresh installs. Existing queue positions and manual placements are preserved.
 
+## Color match threshold
+
+Set **Color match threshold (%)** in **Settings → Workflow → Default Print Options**. It applies to queued jobs and virtual printer jobs that use **Force color match**. The default of **0%** requires the exact hex color. Intermediate values allow that percentage of the full range of difference in each red, green, and blue channel. **100%** allows any color. Material type and existing filament variant checks still apply.
+
 ## Docker images
 
 The [Docker publishing workflow](.github/workflows/docker-publish.yml) builds `linux/amd64` and `linux/arm64` images for `ghcr.io/carter3dp/bambuddy-3dpotter`. It runs on pushes to `main`, version tags beginning with `v`, and manual runs. A manual run uses the selected branch name as a tag, with characters such as `/` replaced by `-`.

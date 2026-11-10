@@ -93,7 +93,7 @@ registerSettingsSearch({ labelKey: 'haSensors.sectionTitle', tab: 'sensors', key
 registerSettingsSearch({ labelKey: 'locationHaSensors.sectionTitle', tab: 'sensors', keywords: 'home assistant sensor location storage box temperature humidity battery alert notify', anchor: 'card-location-sensors' });
 registerSettingsSearch({ labelKey: 'settings.providers', tab: 'notifications', keywords: 'telegram discord email notification providers webhook', anchor: 'card-providers' });
 registerSettingsSearch({ labelKey: 'settings.messageTemplates', tab: 'notifications', keywords: 'message templates notification text edit', anchor: 'card-templates' });
-registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback: 'Default Print Options', tab: 'queue', keywords: 'print bed leveling flow calibration vibration first layer timelapse', anchor: 'card-print-options' });
+registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback: 'Default Print Options', tab: 'queue', keywords: 'print bed leveling flow calibration vibration first layer timelapse color match threshold tolerance', anchor: 'card-print-options' });
 registerSettingsSearch({ labelKey: 'settings.tempFanPresetsTitle', labelFallback: 'Temperature & Fan Presets', tab: 'queue', keywords: 'temperature fan presets nozzle bed chamber quick buttons popover', anchor: 'card-temp-fan-presets' });
 registerSettingsSearch({ labelKey: 'settings.staggeredStart', labelFallback: 'Staggered Start', tab: 'queue', keywords: 'staggered batch delay start queue group', anchor: 'card-staggered' });
 registerSettingsSearch({ labelKey: 'settings.plateClear', labelFallback: 'Plate-Clear Confirmation', tab: 'queue', keywords: 'plate clear confirm auto queue', anchor: 'card-plate' });
@@ -1354,6 +1354,7 @@ export function SettingsPage() {
       baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
       baseline.prometheus_token !== localSettings.prometheus_token ||
       (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true) ||
+      (baseline.color_match_threshold ?? 0) !== (localSettings.color_match_threshold ?? 0) ||
       (baseline.default_bed_levelling ?? 'auto') !== (localSettings.default_bed_levelling ?? 'auto') ||
       (baseline.default_flow_cali ?? 'auto') !== (localSettings.default_flow_cali ?? 'auto') ||
       (baseline.default_vibration_cali ?? true) !== (localSettings.default_vibration_cali ?? true) ||
@@ -1484,6 +1485,7 @@ export function SettingsPage() {
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         user_notifications_enabled: localSettings.user_notifications_enabled,
+        color_match_threshold: localSettings.color_match_threshold,
         default_bed_levelling: localSettings.default_bed_levelling,
         default_flow_cali: localSettings.default_flow_cali,
         default_vibration_cali: localSettings.default_vibration_cali,
@@ -5290,6 +5292,26 @@ export function SettingsPage() {
                   )}
                 </div>
               ))}
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label htmlFor="color-match-threshold" className="text-sm text-white">
+                    {t('settings.colorMatchThreshold', 'Color match threshold (%)')}
+                  </label>
+                  <p id="color-match-threshold-help" className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.colorMatchThresholdHelp', 'Maximum difference per RGB channel when Force color match is on. 0% requires the exact color. 100% allows any color. Filament compatibility still applies.')}
+                  </p>
+                </div>
+                <NumberInput
+                  id="color-match-threshold"
+                  aria-describedby="color-match-threshold-help"
+                  min={0}
+                  max={100}
+                  fallback={0}
+                  value={localSettings.color_match_threshold ?? 0}
+                  onChange={(value) => updateSetting('color_match_threshold', value)}
+                  className="w-24 shrink-0 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                />
+              </div>
               {/* Prints Bambuddy only archived, never dispatched, carry no
                   queue item to read the ask-for-outcome flag from (#1898). */}
               <div className="flex items-center justify-between">

@@ -173,6 +173,15 @@ describe('filterCompatibleQueueItems — force-color PLA variant (#2650)', () =>
     expect(filterCompatibleQueueItems([matteJob], loadedTypes, loaded)).toHaveLength(1);
   });
 
+  it('honors the RGB threshold while still checking the filament variant', () => {
+    const nearColors = new Set(['PLA:fbffff']);
+    const nearMatte = new Set(['PLA:fbffff:GFA01']);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, nearColors, nearMatte, 1)).toHaveLength(0);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, nearColors, nearMatte, 2)).toHaveLength(1);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, nearColors, new Set(['PLA:000000:GFA01']), 100)).toHaveLength(1);
+    expect(filterCompatibleQueueItems([matteJob], loadedTypes, nearColors, new Set(['PLA:000000:GFA00']), 100)).toHaveLength(0);
+  });
+
   it('an override without a tray_info_idx keeps the old type+colour behaviour', () => {
     const noIdxJob = makeItem([{ slot_id: 1, type: 'PLA', color: '#FFFFFF', force_color_match: true }]);
     const variants = new Set(['PLA:ffffff:GFA06']);

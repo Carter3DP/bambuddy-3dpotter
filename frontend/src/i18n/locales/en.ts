@@ -6411,7 +6411,7 @@ export default {
     },
     queueForceColorMatch: {
       title: 'Force color match',
-      description: 'Refuse to dispatch onto a printer that does not have the exact filament type and color loaded. Off by default — without this, the queue uses model-only matching and may pick a printer with the wrong color loaded.',
+      description: 'Require compatible filament within the color match threshold set in Workflow → Default Print Options. Off by default — without this, the queue uses model-only matching and may pick a printer with the wrong color loaded.',
     },
     saveAmsMapping: {
       title: 'Save AMS mapping',

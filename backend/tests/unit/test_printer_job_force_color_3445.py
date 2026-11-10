@@ -49,6 +49,7 @@ def _scheduler(trays):
     scheduler._build_loaded_filaments = MagicMock(return_value=[dict(t) for t in trays])
     scheduler._get_filament_requirements = AsyncMock(return_value=[dict(r) for r in REQUIREMENTS])
     scheduler._get_bool_setting = AsyncMock(return_value=True)  # prefer lowest
+    scheduler._get_int_setting = AsyncMock(return_value=0)
     scheduler._build_inventory_remain_overrides = AsyncMock(return_value=None)
     scheduler._get_job_name = AsyncMock(return_value="part")
     scheduler._get_printer = AsyncMock(return_value=MagicMock(model="P1S"))

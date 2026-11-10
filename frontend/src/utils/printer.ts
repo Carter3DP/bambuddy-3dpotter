@@ -93,13 +93,15 @@ export function isPrinterCurrentlyDispatchable(status: PrinterStatus | undefined
  *   share a base type+colour, mirroring the backend _get_missing_force_color_slots (#2650).
  *   When omitted, force matching falls back to type+colour so the hint is never stricter
  *   than the data available.
+ * @param colorMatchThreshold - Maximum per-channel RGB difference as a percentage
  * @returns Array of compatible queue items
  */
 export function filterCompatibleQueueItems(
   items: PrintQueueItem[],
   loadedFilamentTypes?: Set<string>,
   loadedFilaments?: Set<string>,
-  loadedVariants?: Set<string>
+  loadedVariants?: Set<string>,
+  colorMatchThreshold = 0,
 ): PrintQueueItem[] {
   return items.filter(item => {
     // A job bound to one printer has no printer left to choose, and the backend
@@ -123,14 +125,25 @@ export function filterCompatibleQueueItems(
       const forceOverrides = item.filament_overrides.filter(o => o.force_color_match === true);
       const prefOverrides = item.filament_overrides.filter(o => o.force_color_match !== true);
 
-      // All force-matched slots must have an exact type+color match — and, when the
-      // override carries a tray_info_idx, the same variant too (a loaded tray with a
-      // blank idx still satisfies it, matching the backend's type+colour fallback).
+      // Forced slots require the same type and a color within tolerance.
+      // A blank tray idx is accepted when the override names a variant (#2650).
       if (forceOverrides.length > 0) {
         const allForceMatch = forceOverrides.every(o => {
           const oType = (o.type || '').toUpperCase();
           const oColor = (o.color || '').replace('#', '').toLowerCase().slice(0, 6);
           const oIdx = o.tray_info_idx || '';
+          if (colorMatchThreshold > 0) {
+            return Array.from(loadedVariants ?? loadedFilaments).some(entry => {
+              const [type, color, idx] = entry.split(':');
+              if (type !== oType || (oIdx && idx && oIdx !== idx)) return false;
+              if (colorMatchThreshold === 100 || color === oColor) return true;
+              if (!/^[0-9a-f]{6}$/.test(color) || !/^[0-9a-f]{6}$/.test(oColor)) return false;
+              const limit = Math.floor(colorMatchThreshold * 255 / 100);
+              return [0, 2, 4].every(i =>
+                Math.abs(parseInt(color.slice(i, i + 2), 16) - parseInt(oColor.slice(i, i + 2), 16)) <= limit
+              );
+            });
+          }
           // No variant on the override, or no variant data supplied → type+colour only.
           if (!oIdx || loadedVariants === undefined) {
             return loadedFilaments.has(`${oType}:${oColor}`);

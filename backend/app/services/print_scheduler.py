@@ -3373,10 +3373,13 @@ class PrintScheduler:
         boot wait, and a queue of ten class-targeted jobs must not switch on
         ten printers inside one check.
         """
+        color_match_threshold = None
         for candidate in candidates:
             if not candidate.target_model:
                 continue
             required_types, filament_overrides = _filament_constraints(candidate)
+            if color_match_threshold is None and any(o.get("force_color_match") for o in filament_overrides or []):
+                color_match_threshold = await self._get_int_setting(db, "color_match_threshold", default=0)
             printers = await self._printers_for_model(db, candidate.target_model, target_location, printer_scope)
             for printer in sorted(printers, key=lambda p: p.id):
                 if printer.id in exclude_ids or printer.id not in wakeable_ids:
@@ -3401,7 +3404,9 @@ class PrintScheduler:
                     )
                     continue
 
-                shortfall = self._cached_filament_shortfall(printer.id, required_types, filament_overrides)
+                shortfall = self._cached_filament_shortfall(
+                    printer.id, required_types, filament_overrides, color_match_threshold=color_match_threshold or 0
+                )
                 if shortfall:
                     logger.info(
                         "Not powering on printer %s for a %s job: last known filament cannot satisfy it (needs %s)",
@@ -3476,7 +3481,7 @@ class PrintScheduler:
                                      If provided, only printers with all required types loaded will match.
             target_location: Optional location filter. If provided, only printers in this location are considered.
             filament_overrides: Optional list of override dicts. Each entry may include
-                                 ``force_color_match: true`` to require an exact type+color match
+                                 ``force_color_match: true`` to require the type and a color within tolerance
                                  on the printer for that slot. Without the flag the existing
                                  colour-preference logic applies.
             wakeable_ids: Printers a smart plug can power on (#2786). Only changes how an
@@ -3514,6 +3519,10 @@ class PrintScheduler:
         force_overrides = [o for o in (filament_overrides or []) if o.get("force_color_match")]
         pref_overrides = [o for o in (filament_overrides or []) if not o.get("force_color_match")]
 
+        color_match_threshold = (
+            await self._get_int_setting(db, "color_match_threshold", default=0) if force_overrides else 0
+        )
+
         # Track reasons for skipping printers
         printers_busy = []
         # Printers out of dispatch after a refused upload, worded as the
@@ -3537,7 +3546,9 @@ class PrintScheduler:
                 # report it as a color mismatch rather than plain "Busy" so the user
                 # knows the job needs a filament change, not just to wait for availability.
                 if force_overrides and not pref_overrides:
-                    missing_colors = self._get_missing_force_color_slots(printer.id, force_overrides)
+                    missing_colors = self._get_missing_force_color_slots(
+                        printer.id, force_overrides, color_match_threshold=color_match_threshold
+                    )
                     if missing_colors:
                         printers_missing_filament.append((printer.name, missing_colors))
                         continue
@@ -3553,7 +3564,9 @@ class PrintScheduler:
                 # (#2876). It is also the printer the smart-plug step will now
                 # decline to switch on, and "Offline:" on its own would leave
                 # that decision looking like nothing happening at all.
-                shortfall = self._cached_filament_shortfall(printer.id, required_filament_types, filament_overrides)
+                shortfall = self._cached_filament_shortfall(
+                    printer.id, required_filament_types, filament_overrides, color_match_threshold=color_match_threshold
+                )
                 if shortfall:
                     printers_missing_filament.append((printer.name, shortfall))
                 elif wakeable_ids is not None and printer.id not in wakeable_ids:
@@ -3568,7 +3581,9 @@ class PrintScheduler:
                 # color-mismatch reason rather than plain "Busy" so the user understands
                 # that the job is waiting for a filament change, not just printer availability.
                 if force_overrides and not pref_overrides:
-                    missing_colors = self._get_missing_force_color_slots(printer.id, force_overrides)
+                    missing_colors = self._get_missing_force_color_slots(
+                        printer.id, force_overrides, color_match_threshold=color_match_threshold
+                    )
                     if missing_colors:
                         printers_missing_filament.append((printer.name, missing_colors))
                         logger.debug(
@@ -3602,9 +3617,11 @@ class PrintScheduler:
                     logger.debug("Skipping printer %s (%s) - missing filaments: %s", printer.id, printer.name, missing)
                     continue
 
-            # Force color match: ALL flagged slots must have an exact type+color match
+            # Force color match: all flagged slots must be within tolerance
             if force_overrides:
-                missing_colors = self._get_missing_force_color_slots(printer.id, force_overrides)
+                missing_colors = self._get_missing_force_color_slots(
+                    printer.id, force_overrides, color_match_threshold=color_match_threshold
+                )
                 if missing_colors:
                     printers_missing_filament.append((printer.name, missing_colors))
                     logger.debug(
@@ -3716,13 +3733,18 @@ class PrintScheduler:
         return all(p.startswith("Busy:") for p in parts)
 
     def _get_missing_force_color_slots(
-        self, printer_id: int, force_overrides: list[dict], raw_data: dict | None = None
+        self,
+        printer_id: int,
+        force_overrides: list[dict],
+        raw_data: dict | None = None,
+        *,
+        color_match_threshold: int = 0,
     ) -> list[str]:
         """Return descriptive strings for force_color_match slots not satisfied by the printer.
 
         Each entry in ``force_overrides`` must have ``type`` and ``color`` fields and is expected
         to carry ``force_color_match: True``.  The printer must have **every** such slot loaded
-        with an exact type+color match.
+        with the required type and a color within the configured threshold.
 
         When both the override and a candidate tray carry a ``tray_info_idx``, they must also
         match on it: Bambu reports every PLA variant as ``tray_type == "PLA"``, so the
@@ -3754,6 +3776,18 @@ class PrintScheduler:
             if vt_type:
                 color_norm = self._normalize_color_for_compare(self._normalize_color(vt.get("tray_color")))
                 loaded.append((canonical_filament_type(vt_type), color_norm, vt.get("tray_info_idx", "") or ""))
+
+        if color_match_threshold:
+            trays = [
+                {"global_tray_id": i, "type": material, "color": color, "tray_info_idx": idx}
+                for i, (material, color, idx) in enumerate(loaded)
+            ]
+            matches = self._assign_tolerant_color_slots(force_overrides, trays, color_match_threshold)
+            return [
+                f"{canonical_filament_type(o.get('type') or '')} ({o.get('color_name') or o.get('color', '?')})"
+                for i, o in enumerate(force_overrides)
+                if i not in matches
+            ]
 
         # One spool per slot, the way the matcher assigns them: two slots asking
         # for the same filament need two spools of it (#3280). Slots naming a
@@ -3895,6 +3929,8 @@ class PrintScheduler:
         printer_id: int,
         required_types: list[str] | None,
         filament_overrides: list[dict] | None,
+        *,
+        color_match_threshold: int = 0,
     ) -> list[str]:
         """What a switched-off printer's last known filament cannot provide (#2876).
 
@@ -3938,7 +3974,9 @@ class PrintScheduler:
                 ]
 
         if force_overrides:
-            missing_colors = self._get_missing_force_color_slots(printer_id, force_overrides, raw_data)
+            missing_colors = self._get_missing_force_color_slots(
+                printer_id, force_overrides, raw_data, color_match_threshold=color_match_threshold
+            )
             if missing_colors:
                 return missing_colors
 
@@ -4334,9 +4372,15 @@ class PrintScheduler:
         # two printers with different filament in the external feed is the same
         # failure this method exists to catch.
         required = await self._get_filament_requirements(db, item)
-        if not required:
-            return None
-        self._apply_filament_overrides(item, required)
+        if required:
+            self._apply_filament_overrides(item, required)
+        else:
+            required = _forced_override_requirements(item)
+        color_match_threshold = (
+            await self._get_int_setting(db, "color_match_threshold", default=0)
+            if any(req.get("force_color_match") for req in required)
+            else 0
+        )
 
         # External feeds the printer reports and reports as empty. That is
         # evidence, unlike an external feed it says nothing about (#3239).
@@ -4397,9 +4441,9 @@ class PrintScheduler:
             if req.get("force_color_match"):
                 want_idx = req.get("tray_info_idx") or ""
                 have_idx = loaded_tray.get("tray_info_idx") or ""
-                if self._normalize_color_for_compare(req.get("color")) != self._normalize_color_for_compare(
-                    loaded_tray.get("color")
-                ) or (want_idx and have_idx and want_idx != have_idx):
+                if not self._forced_colors_match(req.get("color"), loaded_tray.get("color"), color_match_threshold) or (
+                    want_idx and have_idx and want_idx != have_idx
+                ):
                     return (
                         f"slot {slot_id} is forced to {req.get('type')} {req.get('color')} "
                         f"but tray {tray} holds {loaded_tray.get('type')} {loaded_tray.get('color')}"
@@ -4568,7 +4612,10 @@ class PrintScheduler:
                             item.id,
                             len(force_overrides),
                         )
-                        return self._build_override_direct_mapping(force_overrides, status)
+                        color_match_threshold = await self._get_int_setting(db, "color_match_threshold", default=0)
+                        return self._build_override_direct_mapping(
+                            force_overrides, status, color_match_threshold=color_match_threshold
+                        )
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.warning("Queue item %s: Force-color fallback mapping failed: %s", item.id, e)
             logger.debug("No filament requirements found for queue item %s", item.id)
@@ -4609,9 +4656,20 @@ class PrintScheduler:
         if prefer_lowest:
             inventory_remain_overrides = await self._build_inventory_remain_overrides(db, printer_id, loaded_filaments)
 
+        color_match_threshold = (
+            await self._get_int_setting(db, "color_match_threshold", default=0)
+            if any(req.get("force_color_match") for req in filament_reqs)
+            else 0
+        )
+
         # Compute mapping: match required filaments to available slots
         return self._match_filaments_to_slots(
-            filament_reqs, loaded_filaments, prefer_lowest, inventory_remain_overrides, fts_installed
+            filament_reqs,
+            loaded_filaments,
+            prefer_lowest,
+            inventory_remain_overrides,
+            fts_installed,
+            color_match_threshold=color_match_threshold,
         )
 
     def _apply_filament_overrides(self, item: PrintQueueItem, filament_reqs: list[dict]) -> None:
@@ -4659,7 +4717,9 @@ class PrintScheduler:
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to apply filament overrides for queue item %s: %s", item.id, e)
 
-    def _build_override_direct_mapping(self, force_overrides: list[dict], status) -> list[int] | None:
+    def _build_override_direct_mapping(
+        self, force_overrides: list[dict], status, *, color_match_threshold: int = 0
+    ) -> list[int] | None:
         """Build an AMS mapping directly from force-color overrides without a 3MF.
 
         Used when ``_get_filament_requirements`` returns nothing (e.g. the 3MF's
@@ -4689,7 +4749,7 @@ class PrintScheduler:
             }
             for o in force_overrides
         ]
-        return self._match_filaments_to_slots(reqs, loaded)
+        return self._match_filaments_to_slots(reqs, loaded, color_match_threshold=color_match_threshold)
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
         """Resolve the queue item's source 3MF and parse the per-slot
@@ -4863,6 +4923,68 @@ class PrintScheduler:
         except ValueError:
             return False
 
+    def _forced_colors_match(self, wanted: str | None, loaded: str | None, threshold: int) -> bool:
+        if threshold == 100 or self._normalize_color_for_compare(wanted) == self._normalize_color_for_compare(loaded):
+            return True
+        return threshold > 0 and self._colors_are_similar(wanted, loaded, threshold * 255 // 100)
+
+    def _assign_tolerant_color_slots(
+        self,
+        required: list[dict],
+        loaded: list[dict],
+        threshold: int,
+        *,
+        fts_installed: bool = False,
+    ) -> dict[int, dict]:
+        """Assign distinct trays to as many forced slots as possible."""
+        trays = {tray["global_tray_id"]: tray for tray in loaded}
+        candidates = []
+        for req in required:
+            want_type = canonical_filament_type(req.get("type") or "")
+            want_idx = req.get("tray_info_idx")
+            want_color = req.get("color")
+            nozzle_id = req.get("nozzle_id")
+            eligible = [
+                tray
+                for tray in trays.values()
+                if canonical_filament_type(tray.get("type") or "") == want_type
+                and (not want_idx or not tray.get("tray_info_idx") or tray["tray_info_idx"] == want_idx)
+                and (fts_installed or nozzle_id is None or tray.get("extruder_id") == nozzle_id)
+                and self._forced_colors_match(want_color, tray.get("color"), threshold)
+            ]
+            # Prefer the named variant, then the closest color, with tray order
+            # (or the lowest-remaining sort) breaking ties.
+            eligible.sort(
+                key=lambda tray: (
+                    bool(want_idx) and tray.get("tray_info_idx") != want_idx,
+                    distance
+                    if (distance := self._color_distance(want_color, tray.get("color"))) is not None
+                    else float("inf"),
+                )
+            )
+            candidates.append([tray["global_tray_id"] for tray in eligible])
+
+        assigned: dict[int, int] = {}
+
+        def assign(slot: int, visited: set[int]) -> bool:
+            # Try a free tray first to preserve earlier picks. If all eligible
+            # trays are occupied, look for a way to move one of their slots.
+            for tray_id in candidates[slot]:
+                if tray_id not in assigned:
+                    assigned[tray_id] = slot
+                    return True
+            for tray_id in candidates[slot]:
+                if tray_id not in visited:
+                    visited.add(tray_id)
+                    if assign(assigned[tray_id], visited):
+                        assigned[tray_id] = slot
+                        return True
+            return False
+
+        for slot in sorted(range(len(required)), key=lambda i: not required[i].get("tray_info_idx")):
+            assign(slot, set())
+        return {slot: trays[tray_id] for tray_id, slot in assigned.items()}
+
     async def _build_inventory_remain_overrides(
         self, db: AsyncSession, printer_id: int, loaded: list[dict]
     ) -> dict[int, float]:
@@ -5014,6 +5136,8 @@ class PrintScheduler:
         prefer_lowest: bool = False,
         inventory_remain_overrides: dict[int, float] | None = None,
         fts_installed: bool = False,
+        *,
+        color_match_threshold: int = 0,
     ) -> list[int] | None:
         """Match required filaments to loaded filaments and build AMS mapping.
 
@@ -5034,6 +5158,19 @@ class PrintScheduler:
         """
         if not required:
             return None
+
+        tolerant_matches = {}
+        if color_match_threshold:
+            forced_reqs = [req for req in required if req.get("force_color_match")]
+            trays = loaded
+            if prefer_lowest:
+                trays = sorted(loaded, key=lambda f: self._prefer_lowest_sort_key(f, inventory_remain_overrides))
+            tolerant_matches = {
+                forced_reqs[index].get("slot_id"): tray
+                for index, tray in self._assign_tolerant_color_slots(
+                    forced_reqs, trays, color_match_threshold, fts_installed=fts_installed
+                ).items()
+            }
 
         # Track used trays to avoid duplicate assignment
         used_tray_ids: set[int] = set()
@@ -5111,13 +5248,12 @@ class PrintScheduler:
                 )
 
             # A forced slot takes only what `_get_missing_force_color_slots`
-            # accepts: same type, exact colour, and the same variant when both
-            # sides name one -- preferring the tray that does. Nothing looser:
-            # the model-based path holds a job the printer cannot satisfy this
-            # way, and a printer-pinned job fell through to type_only and
-            # printed in whatever colour came first (#3280).
+            # accepts: same type, color within tolerance, and the same variant
+            # when both sides name one. Forced slots never fall through to
+            # type_only (#3280).
             forced = bool(req.get("force_color_match"))
-            if forced:
+            tolerant_match = tolerant_matches.get(req.get("slot_id")) if forced else None
+            if forced and not color_match_threshold:
                 want_type = canonical_filament_type(req_type)
                 want_color = self._normalize_color_for_compare(req_color)
                 candidates = [
@@ -5193,7 +5329,7 @@ class PrintScheduler:
                     elif not type_only_match:
                         type_only_match = f
 
-            match = idx_match or exact_match or similar_match or type_only_match
+            match = tolerant_match or idx_match or exact_match or similar_match or type_only_match
             if match:
                 used_tray_ids.add(match["global_tray_id"])
                 comparisons.append({"slot_id": req.get("slot_id", 0), "global_tray_id": match["global_tray_id"]})
@@ -5208,7 +5344,9 @@ class PrintScheduler:
             # is on (#1766).
             if match:
                 bucket = (
-                    "idx"
+                    "forced_color"
+                    if tolerant_match is not None
+                    else "idx"
                     if idx_match is not None
                     else "exact_color"
                     if exact_match is not None

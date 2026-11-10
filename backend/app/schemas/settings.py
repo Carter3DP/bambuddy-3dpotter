@@ -424,6 +424,9 @@ class AppSettings(BaseModel):
 
     # Default print options. bed_levelling / flow_cali / nozzle_offset_cali are
     # tri-state (off/on/auto), defaulting to "auto" per BambuStudio.
+    color_match_threshold: int = Field(
+        default=0, ge=0, le=100, description="Maximum RGB channel difference as a percentage for forced color matches"
+    )
     default_bed_levelling: TriState = Field(default="auto", description="Default bed levelling option for new prints")
     default_flow_cali: TriState = Field(default="auto", description="Default flow calibration option for new prints")
     default_vibration_cali: bool = Field(
@@ -855,6 +858,7 @@ class AppSettingsUpdate(BaseModel):
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     session_max_hours: int | None = Field(default=None, ge=1, le=720)
     user_notifications_enabled: bool | None = None
+    color_match_threshold: int | None = Field(default=None, ge=0, le=100)
     default_bed_levelling: TriState | None = None
     default_flow_cali: TriState | None = None
     default_vibration_cali: bool | None = None

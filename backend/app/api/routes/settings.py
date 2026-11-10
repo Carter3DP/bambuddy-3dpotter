@@ -267,6 +267,7 @@ _INT_SETTING_KEYS = frozenset(
         "queue_max_concurrent_uploads",
         "ambient_drying_sustained_minutes",
         "pause_warning_minutes",
+        "color_match_threshold",
         "obico_poll_interval",
         "octoeverywhere_poll_interval",
     }
@@ -713,6 +714,7 @@ _UI_FLAG_FIELDS: tuple[str, ...] = (
     "per_printer_mapping_expanded",
     "default_filament_cost",
     "default_bed_levelling",
+    "color_match_threshold",
     "default_flow_cali",
     "default_vibration_cali",
     "default_layer_inspect",
