@@ -303,6 +303,7 @@ class PrintQueueItemResponse(BaseModel):
 
     # Shortest-job-first scheduling
     been_jumped: bool = False
+    working_hours_manual_position: bool = False
 
     # Auto-print G-code injection
     gcode_injection: bool = False
@@ -347,6 +348,7 @@ class PrintQueueHistoryClearResponse(BaseModel):
 class PrintQueueReorderItem(BaseModel):
     id: int
     position: int
+    working_hours_manual_position: bool | None = None
 
 
 class PrintQueueReorder(BaseModel):

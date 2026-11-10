@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, Clock, Layers, Printer as PrinterIcon } from 'lucide-react';
 import { formatDuration, parseUTCDate } from '../utils/date';
-import { compareQueueOrder, queueLaneKey } from '../utils/queueOrder';
+import { sortQueueItems, queueLaneKey } from '../utils/queueOrder';
 import { isBusyOnlyWaitingReason } from '../utils/waitingReason';
 import type { PrintQueueItem, Printer } from '../api/client';
 import { queueItemThumbnailUrl } from '../utils/queueItemThumbnail';
@@ -109,7 +109,8 @@ export function QueueTimelineView({
     // Chain-end timestamp per lane (where the next pending item's bar starts).
     const chainEndByLane = new Map<string, number>();
 
-    for (const item of queueItems) {
+    const pendingOrder = sortQueueItems(queueItems.filter(item => item.status === 'pending'), sjfEnabled, workingSecondsLeft ?? 0);
+    for (const item of [...queueItems.filter(item => item.status !== 'pending'), ...pendingOrder]) {
       if (item.status === 'printing') {
         const status = item.printer_id != null ? printerStatuses[item.printer_id] : undefined;
         const start = parseUTCDate(item.started_at) || new Date();
@@ -148,7 +149,6 @@ export function QueueTimelineView({
 
     const sixMonthsFromNow = Date.now() + 180 * 24 * HOUR_MS;
     for (const [lk, items] of pendingByLaneKey) {
-      items.sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));
       const hasActive = lanesWithActive.has(lk);
       // A lane is timelineable when EITHER it has an active print (chain
       // forecast off its end) OR its first pending item is scheduled (a

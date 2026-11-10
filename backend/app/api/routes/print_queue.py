@@ -22,6 +22,7 @@ from backend.app.core.auth import (
     QueueReviewRequired,
     RequestActor,
     RequestPrinterScope,
+    RequireAnyPermissionIfAuthEnabled,
     RequirePermissionIfAuthEnabled,
     RequirePrinterPermissionIfAuthEnabled,
     may_start_queue_item,
@@ -543,6 +544,7 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         "batch_name": item.batch.name if item.batch else None,
         # SJF scheduling
         "been_jumped": item.been_jumped,
+        "working_hours_manual_position": item.working_hours_manual_position,
         # Auto-print G-code injection
         "gcode_injection": item.gcode_injection,
         # H2C rack-swap nozzle pick (#1780)
@@ -2744,7 +2746,7 @@ async def delete_queue_item(
 async def reorder_queue(
     data: PrintQueueReorder,
     db: AsyncSession = Depends(get_db, scope="function"),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_UPDATE_ALL),
+    _: User | None = RequireAnyPermissionIfAuthEnabled(Permission.QUEUE_REORDER, Permission.QUEUE_UPDATE_ALL),
     printer_scope: PrinterScope = RequestPrinterScope,
 ):
     """Bulk update positions for queue items."""
@@ -2754,6 +2756,8 @@ async def reorder_queue(
         # Jobs on printers the caller can't see keep their place (#1727)
         if item and item.status == "pending" and printer_scope.allows(item.printer_id):
             item.position = reorder_item.position
+            if reorder_item.working_hours_manual_position is not None:
+                item.working_hours_manual_position = reorder_item.working_hours_manual_position
 
     await db.commit()
     logger.info("Reordered %s queue items", len(data.items))

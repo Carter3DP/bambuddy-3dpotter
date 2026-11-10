@@ -68,6 +68,7 @@ class PrintQueueItem(Base):
     # Shortest-job-first scheduling
     print_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Cached from archive/library
     been_jumped: Mapped[bool] = mapped_column(Boolean, default=False)  # Starvation guard for SJF
+    working_hours_manual_position: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Auto-print G-code injection (#422)
     gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False)

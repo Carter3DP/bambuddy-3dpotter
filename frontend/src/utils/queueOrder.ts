@@ -21,6 +21,7 @@ interface OrderableQueueItem {
   printer_id?: number | null;
   target_model?: string | null;
   been_jumped?: boolean;
+  working_hours_manual_position?: boolean;
   print_time_seconds?: number | null;
   position: number;
   id?: number;
@@ -78,4 +79,21 @@ export function compareQueueOrder(
 
   if (a.position !== b.position) return a.position - b.position;
   return (a.id ?? 0) - (b.id ?? 0);
+}
+
+
+/** Keep manual jobs in their saved slots while automatic jobs fill the gaps. */
+export function sortQueueItems<T extends OrderableQueueItem>(
+  items: T[],
+  sjfEnabled: boolean,
+  workingSecondsLeft: number,
+  preserveManualSlots = workingSecondsLeft > 0,
+): T[] {
+  const automaticOrder = [...items].sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));
+  if (!preserveManualSlots || !items.some(item => item.working_hours_manual_position)) return automaticOrder;
+
+  const automatic = automaticOrder.filter(item => !item.working_hours_manual_position).values();
+  return [...items].sort((a, b) => compareQueueOrder(a, b, false)).map(item =>
+    item.working_hours_manual_position ? item : automatic.next().value!,
+  );
 }

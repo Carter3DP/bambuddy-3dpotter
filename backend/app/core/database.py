@@ -4194,6 +4194,10 @@ async def _run_migrations(conn):
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN print_time_seconds INTEGER")
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN been_jumped BOOLEAN DEFAULT FALSE NOT NULL")
 
+    await _safe_execute(
+        conn, "ALTER TABLE print_queue ADD COLUMN working_hours_manual_position BOOLEAN DEFAULT FALSE NOT NULL"
+    )
+
     # Migration: Auto-print G-code injection (#422)
     await _safe_execute(conn, "ALTER TABLE print_queue ADD COLUMN gcode_injection BOOLEAN DEFAULT FALSE NOT NULL")
 

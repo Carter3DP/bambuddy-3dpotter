@@ -494,7 +494,6 @@ class AppSettings(BaseModel):
         description="Shortest Job First — scheduler prioritizes shorter print jobs over longer ones",
     )
     queue_working_hours: WorkingHours = Field(default_factory=lambda: WorkingHours.from_storage(None))
-    queue_working_hours_manual_until: int = 0
     queue_max_concurrent_uploads: int = Field(
         default=4,
         ge=1,
@@ -865,7 +864,6 @@ class AppSettingsUpdate(BaseModel):
     require_plate_clear: bool | None = None
     queue_shortest_first: bool | None = None
     queue_working_hours: WorkingHours | None = None
-    queue_working_hours_manual_until: int | None = Field(default=None, ge=0)
     queue_max_concurrent_uploads: int | None = Field(default=None, ge=1, le=16)
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None

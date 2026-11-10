@@ -59,12 +59,6 @@ class TestSettingsAPI:
         assert response.status_code == 422
         assert (await async_client.get(route)).json()["queue_working_hours"] == hours
         assert (await async_client.get(route + "ui-flags")).json()["queue_working_hours"] == hours
-        for manual_until in (1794241800, 0):
-            response = await async_client.put(route, json={"queue_working_hours_manual_until": manual_until})
-            assert response.status_code == 200
-            assert (await async_client.get(route + "ui-flags")).json()[
-                "queue_working_hours_manual_until"
-            ] == manual_until
 
     @pytest.mark.asyncio
     @pytest.mark.integration

@@ -1598,7 +1598,6 @@ export interface AppSettings {
   queue_shortest_first: boolean;
   queue_working_hours: { enabled: boolean; start: string; end: string };
   queue_working_hours_active_until: string | null;
-  queue_working_hours_manual_until: number;
   // How many printers the queue may upload to at once (#2555). 1 restores the
   // old strictly-serial behaviour, where every printer waited out every other
   // printer's transfer.
@@ -2793,6 +2792,12 @@ export interface DiscoveredTasmotaDevice {
 }
 
 // Print Queue types
+export interface QueueReorderItem {
+  id: number;
+  position: number;
+  working_hours_manual_position?: boolean;
+}
+
 export interface PrintQueueItem {
   id: number;
   printer_id: number | null;  // null = unassigned
@@ -2874,6 +2879,7 @@ export interface PrintQueueItem {
   batch_name?: string | null;
   // Shortest-job-first scheduling
   been_jumped?: boolean;
+  working_hours_manual_position?: boolean;
   // Auto-print G-code injection
   gcode_injection?: boolean;
   cleanup_library_after_dispatch?: boolean;
@@ -6810,7 +6816,7 @@ export const api = {
    *  last run a batch order could re-queue its plate from (#2960). */
   removeFromQueue: (id: number) =>
     request<{ message: string; deleted: boolean }>(`/queue/${id}`, { method: 'DELETE' }),
-  reorderQueue: (items: { id: number; position: number }[]) =>
+  reorderQueue: (items: QueueReorderItem[]) =>
     request<{ message: string }>('/queue/reorder', {
       method: 'POST',
       body: JSON.stringify({ items }),

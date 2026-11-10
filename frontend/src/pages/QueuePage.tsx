@@ -72,7 +72,7 @@ import { type TimeFormat, formatETA, formatDuration, formatRelativeTime, parseUT
 import { getBedTypeInfo } from '../utils/bedType';
 import { getColorName } from '../utils/colors';
 import { productLineOf, useFilamentNameByIdx } from '../components/PrintModal/useFilamentLabels';
-import type { PrintQueueItem, PrintQueueBulkUpdate, Permission, CalibrationMode, PrinterStatus, SlotSpoolIdentity } from '../api/client';
+import type { PrintQueueItem, PrintQueueBulkUpdate, QueueReorderItem, Permission, CalibrationMode, PrinterStatus, SlotSpoolIdentity } from '../api/client';
 import { formatSlotLabel, getEmptySlotKind } from '../utils/amsHelpers';
 import type { PlateMetadata } from '../types/plates';
 import { Card } from '../components/Card';
@@ -86,7 +86,7 @@ import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { ColorSubstitutionNotes } from '../components/ColorSubstitutionNotes';
 import { QueueTimelineView } from '../components/QueueTimelineView';
-import { compareQueueOrder } from '../utils/queueOrder';
+import { compareQueueOrder, sortQueueItems } from '../utils/queueOrder';
 import { BatchOrdersView } from '../components/BatchOrdersView';
 import { ThumbnailHoverPreview } from '../components/ThumbnailHoverPreview';
 import { buildLoadedFilaments, type LoadedFilament } from '../hooks/useFilamentMapping';
@@ -578,6 +578,7 @@ function SortableQueueItem({
   onMoveDown,
   reorderDisabled = false,
   movedByWorkingHours = false,
+  onClearManualPosition,
   timeFormat = 'system',
   isSelected = false,
   onToggleSelect,
@@ -603,6 +604,7 @@ function SortableQueueItem({
   onMoveDown?: () => void;
   reorderDisabled?: boolean;
   movedByWorkingHours?: boolean;
+  onClearManualPosition?: () => void;
   timeFormat?: TimeFormat;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -802,7 +804,7 @@ function SortableQueueItem({
         )}
 
         {/* Drag handle or position number - hidden on mobile */}
-        {isPending ? (
+        {isPending && canReorder ? (
           <div
             {...attributes}
             {...listeners}
@@ -840,6 +842,20 @@ function SortableQueueItem({
               {(platesData?.is_multi_plate ?? false) && item.plate_id !== undefined && item.plate_id !== null && ` • ${plates.find(plate => plate.index === item.plate_id)?.name || t('queue.plateNumber', { index: item.plate_id })}`}
             </p>
             {movedByWorkingHours && <WorkingHoursBadge t={t} />}
+            {isPending && item.working_hours_manual_position && (
+              <button
+                type="button"
+                disabled={!onClearManualPosition}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onClearManualPosition?.();
+                }}
+                className="shrink-0 rounded bg-bambu-dark px-1.5 py-0.5 text-[10px] text-bambu-gray enabled:hover:text-white"
+                title={t('queue.clearWorkingHoursOverride', { defaultValue: 'Restore Working Hours order for this job' })}
+              >
+                {t('queue.workingHoursManualPosition', { defaultValue: 'Manual position' })}
+              </button>
+            )}
             {item.archive_id ? (
               <Link
                 to={`/archives?highlight=${item.archive_id}`}
@@ -1238,6 +1254,7 @@ interface QueueRowRenderProps {
   // measured from (#2740).
   etaEligibleIds: Set<number>;
   workingHoursMovedIds: Set<number>;
+  clearManualPosition?: (item: PrintQueueItem) => void;
   etaNow: number;
   aggregateForRows: (rows: QueueRow[]) => { count: number; time: number; weight: number };
   // Mobile tap-to-reorder (#2667). onMoveUp/onMoveDown move this whole row
@@ -1267,6 +1284,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
     t,
     etaEligibleIds,
     workingHoursMovedIds,
+    clearManualPosition,
     etaNow,
     onMoveUp,
     onMoveDown,
@@ -1287,6 +1305,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
         onMoveDown={onMoveDown}
         reorderDisabled={reorderDisabled}
         movedByWorkingHours={workingHoursMovedIds.has(row.item.id)}
+        onClearManualPosition={clearManualPosition && (() => clearManualPosition(row.item))}
         timeFormat={timeFormat}
         isSelected={selectedItems.includes(row.item.id)}
         onToggleSelect={() => handleToggleSelect(row.item.id)}
@@ -1321,6 +1340,7 @@ function SortableBatchRow({
   t,
   etaEligibleIds,
   workingHoursMovedIds,
+  clearManualPosition,
   etaNow,
   aggregateForRows,
   onMoveUp,
@@ -1446,7 +1466,6 @@ function SortableBatchRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <p className="text-sm sm:text-base text-white font-medium truncate">{batchRow.batchName}</p>
-            {collapsed && allChildIds.some(id => workingHoursMovedIds.has(id)) && <WorkingHoursBadge t={t} />}
             <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs bg-cyan-100 dark:bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 rounded border border-cyan-300 dark:border-cyan-500/30">
               {t('queue.batch.label', { count: agg.count })}
             </span>
@@ -1496,6 +1515,7 @@ function SortableBatchRow({
               key={child.id}
               item={child}
               movedByWorkingHours={workingHoursMovedIds.has(child.id)}
+              onClearManualPosition={clearManualPosition && (() => clearManualPosition(child))}
               onEdit={() => setEditItem(child)}
               onCancel={() => setConfirmAction({ type: 'cancel', item: child })}
               onRemove={() => {}}
@@ -1961,15 +1981,6 @@ export function QueuePage() {
     },
   });
 
-  const manualOrderMutation = useMutation({
-    mutationFn: (until: number) => api.updateSettings({ queue_working_hours_manual_until: until }),
-    onSuccess: () => Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['settings'] }),
-      queryClient.invalidateQueries({ queryKey: ['ui-settings'] }),
-    ]),
-    onError: () => showToast(t('queue.workingHoursOverrideFailed', 'Could not update the manual queue override.'), 'error'),
-  });
-
   const cancelMutation = useMutation({
     mutationFn: (id: number) => api.cancelQueueItem(id),
     onSuccess: () => {
@@ -2053,7 +2064,7 @@ export function QueuePage() {
   });
 
   const reorderMutation = useMutation({
-    mutationFn: (items: { id: number; position: number }[]) => api.reorderQueue(items),
+    mutationFn: (items: QueueReorderItem[]) => api.reorderQueue(items),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
     },
@@ -2186,24 +2197,17 @@ export function QueuePage() {
   }, [filterLocation, printers]);
 
   const workingDeadline = parseUTCDate(settings?.queue_working_hours_active_until)?.getTime() ?? 0;
-  const secondsUntilClosing = Math.max(0, (workingDeadline - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000);
-  const workingHoursActive = secondsUntilClosing > 0;
-  const manualOrderActive = workingHoursActive && settings?.queue_working_hours_manual_until === Math.floor(workingDeadline / 1000);
-  const workingHoursPriority = workingHoursActive && !manualOrderActive;
-  const workingSecondsLeft = workingHoursPriority ? secondsUntilClosing : 0;
-  const sjfEnabled = !manualOrderActive && (settings?.queue_shortest_first ?? false);
-  const schedulerOrder = useCallback(
-    (a: PrintQueueItem, b: PrintQueueItem) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft),
-    [sjfEnabled, workingSecondsLeft],
+  const workingSecondsLeft = Math.max(0, (workingDeadline - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000);
+  const workingHoursActive = workingSecondsLeft > 0;
+  const sjfEnabled = settings?.queue_shortest_first ?? false;
+  const allPending = useMemo(() => queue?.filter(item => item.status === 'pending') ?? [], [queue]);
+  const dispatchOrder = useMemo(
+    () => sortQueueItems(allPending, sjfEnabled, workingSecondsLeft),
+    [allPending, sjfEnabled, workingSecondsLeft],
   );
 
   const pendingItems = useMemo(() => {
-    let items = queue?.filter(i => i.status === 'pending') || [];
-
-    // Apply location filter
-    if (filterLocation) {
-      items = items.filter(matchesLocationFilter);
-    }
+    const items = (sjfEnabled || workingHoursActive ? dispatchOrder : allPending).filter(matchesLocationFilter);
 
     // Helper to get scheduled time as timestamp (ASAP/placeholder = 0 for earliest)
     const getScheduledTime = (item: PrintQueueItem): number => {
@@ -2216,7 +2220,7 @@ export function QueuePage() {
 
     // When a dispatch preference is active, show the scheduler order.
     if (sjfEnabled || workingHoursActive) {
-      return [...items].sort(schedulerOrder);
+      return items;
     }
 
     return [...items].sort((a, b) => {
@@ -2235,13 +2239,13 @@ export function QueuePage() {
       }
       return pendingSortAsc ? cmp : -cmp;
     });
-  }, [queue, pendingSortBy, pendingSortAsc, matchesLocationFilter, filterLocation, sjfEnabled, workingHoursActive, schedulerOrder]);
+  }, [allPending, dispatchOrder, pendingSortBy, pendingSortAsc, matchesLocationFilter, sjfEnabled, workingHoursActive]);
 
   const workingHoursMovedIds = useMemo(() => {
-    if (!workingHoursPriority) return new Set<number>();
-    const normalOrder = [...pendingItems].sort((a, b) => compareQueueOrder(a, b, sjfEnabled));
-    return new Set(pendingItems.filter((item, index) => item.id !== normalOrder[index]?.id).map(item => item.id));
-  }, [pendingItems, sjfEnabled, workingHoursPriority]);
+    if (!workingHoursActive) return new Set<number>();
+    const normalOrder = sortQueueItems(allPending, sjfEnabled, 0, true);
+    return new Set(dispatchOrder.filter((item, index) => item.id !== normalOrder[index]?.id).map(item => item.id));
+  }, [allPending, dispatchOrder, sjfEnabled, workingHoursActive]);
 
   const handleSelectAll = () => {
     const allPendingIds = pendingItems.map(i => i.id);
@@ -2290,15 +2294,13 @@ export function QueuePage() {
     // Staged and future-scheduled items are excluded: the scheduler skips both
     // without marking the printer busy, so neither holds up the item behind it.
     const contenders = new Map<number, PrintQueueItem[]>();
-    queue
+    dispatchOrder
       .filter(
         item =>
-          item.status === 'pending' &&
           item.printer_id != null &&
           !item.manual_start &&
           !isFutureScheduled(item)
       )
-      .sort(schedulerOrder)
       .forEach(item => {
         const list = contenders.get(item.printer_id!) ?? [];
         list.push(item);
@@ -2333,7 +2335,7 @@ export function QueuePage() {
     });
 
     return eligible;
-  }, [queue, schedulerOrder]);
+  }, [queue, dispatchOrder]);
 
   // The ETA is "now + duration", so it goes stale on its own. Nothing else
   // re-renders these rows while the queue payload is unchanged (react-query's
@@ -2415,7 +2417,7 @@ export function QueuePage() {
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveDragId(null);
-    if (workingHoursPriority || !over || active.id === over.id) return;
+    if (!canReorderManually || !over || active.id === over.id) return;
 
     // Resolve dragged source → movingIds (preserving order from pendingItems).
     //   - `batch-<id>`: every child of that batch, in their current order
@@ -2441,38 +2443,21 @@ export function QueuePage() {
     // Resolve drop target → index inside pendingItems. A `batch-<id>` drop
     // target anchors at the batch's first child, so dropping above another
     // batch lands the moving block immediately before it.
+    const firstMovingIndex = pendingItems.findIndex((item) => item.id === movingIds[0]);
     let overIndex: number;
     const overId = over.id;
     if (typeof overId === 'string' && overId.startsWith('batch-')) {
       const overBatchId = Number(overId.slice('batch-'.length));
       overIndex = pendingItems.findIndex((i) => i.batch_id === overBatchId);
+      if (firstMovingIndex < overIndex) {
+        overIndex = pendingItems.map(item => item.batch_id).lastIndexOf(overBatchId);
+      }
     } else {
       overIndex = pendingItems.findIndex((i) => i.id === overId);
     }
     if (overIndex === -1) return;
 
-    // Remove the moving items, then re-insert at overIndex (adjusted).
-    const overAnchor = pendingItems[overIndex];
-    const remaining = pendingItems.filter((i) => !movingIds.includes(i.id));
-    let insertAt = remaining.findIndex((i) => i.id === overAnchor.id);
-    if (insertAt === -1) insertAt = overIndex;
-    // If dragging downward across the drop target, insert AFTER it; upward
-    // = before. dnd-kit's `over` is the row under the pointer, not the gap.
-    const firstMovingIndex = pendingItems.findIndex((i) => i.id === movingIds[0]);
-    if (firstMovingIndex < overIndex) insertAt += 1;
-    const reordered = [
-      ...remaining.slice(0, insertAt),
-      ...movingIds
-        .map((id) => pendingItems.find((i) => i.id === id))
-        .filter((x): x is PrintQueueItem => !!x),
-      ...remaining.slice(insertAt),
-    ];
-
-    const updates = reordered.map((item, index) => ({
-      id: item.id,
-      position: index + 1,
-    }));
-    reorderMutation.mutate(updates);
+    moveBlockRelativeTo(movingIds, pendingItems[overIndex].id, firstMovingIndex < overIndex);
   };
 
   // Group pending items by batch_id. Items with batch_id null render as
@@ -2502,11 +2487,11 @@ export function QueuePage() {
 
   // Mobile tap-to-reorder (#2667). The desktop drag handle is hidden on
   // phones and touch-drag is unreliable, so pending rows get up/down arrows.
-  // Reordering only has a defined meaning in the manual "position" sort with
-  // automatic dispatch preferences off, when the list shows manual order.
+  // During Working Hours a move reserves a slot for just the jobs being moved.
+  // Outside that window, manual reorder uses the saved position view.
   const canReorderManually =
     hasPermission('queue:reorder') &&
-    (manualOrderActive || (pendingSortBy === 'position' && !sjfEnabled && !workingHoursPriority));
+    (workingHoursActive || (pendingSortBy === 'position' && !sjfEnabled));
 
   const rowItemIds = (row: QueueRow): number[] =>
     row.kind === 'item' ? [row.item.id] : row.items.map((i) => i.id);
@@ -2528,14 +2513,39 @@ export function QueuePage() {
     const movingItems = movingIds
       .map((id) => pendingItems.find((i) => i.id === id))
       .filter((x): x is PrintQueueItem => !!x);
+    if (movingItems.length === 0) return;
     const reordered = [
       ...remaining.slice(0, insertAt),
       ...movingItems,
       ...remaining.slice(insertAt),
     ];
-    reorderMutation.mutate(
-      reordered.map((item, index) => ({ id: item.id, position: index + 1 })),
-    );
+    if (!workingHoursActive) {
+      reorderMutation.mutate(reordered.map((item, index) => ({ id: item.id, position: index + 1 })));
+      return;
+    }
+
+    const moved = new Set(movingItems.map(item => item.id));
+    const reorderedVisible = reordered.values();
+    const desired = dispatchOrder.map(item => matchesLocationFilter(item) ? reorderedVisible.next().value! : item);
+    const reserved = (item: PrintQueueItem) => moved.has(item.id) || item.working_hours_manual_position;
+    // Give manual jobs their selected slots while retaining the saved relative
+    // order of automatic jobs, even if Working Hours currently sorts them differently.
+    const automatic = [...allPending].sort((a, b) => compareQueueOrder(a, b, false))
+      .filter(item => !reserved(item)).values();
+    const updates = desired.flatMap((item, index) => {
+      const saved = reserved(item) ? item : automatic.next().value!;
+      if (saved.position === index + 1 && !moved.has(saved.id)) return [];
+      return [{
+        id: saved.id,
+        position: index + 1,
+        ...(moved.has(saved.id) ? { working_hours_manual_position: true } : {}),
+      }];
+    });
+    reorderMutation.mutate(updates);
+  };
+
+  const clearManualPosition = (item: PrintQueueItem) => {
+    reorderMutation.mutate([{ id: item.id, position: item.position, working_hours_manual_position: false }]);
   };
 
   // Build up/down thunks for the row at `idx` within its displayed sibling
@@ -2966,26 +2976,13 @@ export function QueuePage() {
                 ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
                 : 'bg-bambu-dark-secondary border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
             }`}
-            disabled={manualOrderActive}
             title={t('queue.sjf.tooltip', 'Shortest Job First — scheduler prioritizes shorter prints')}
           >
             <Snail className="w-4 h-4" />
             <span className="hidden sm:inline">{t('queue.sjf.label', 'SJF')}</span>
             <span className={`w-1.5 h-1.5 rounded-full ${settings?.queue_shortest_first ? 'bg-bambu-green' : 'bg-bambu-gray'}`} />
           </button>
-          {workingHoursActive && hasPermission('settings:update') && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={manualOrderMutation.isPending}
-              onClick={() => manualOrderMutation.mutate(manualOrderActive ? 0 : Math.floor(workingDeadline / 1000))}
-              title={t('queue.workingHoursOverrideHint', 'Use saved queue positions for dispatch until this working window closes.')}
-            >
-              {manualOrderActive
-                ? t('queue.workingHoursResume', 'Resume Working Hours order')
-                : t('queue.workingHoursOverride', 'Use manual order')}
-            </Button>
-          )}
+
         </div>
       )}
 
@@ -3083,13 +3080,11 @@ export function QueuePage() {
                   <span className="text-xs sm:text-sm font-normal text-bambu-gray">
                     ({t('queue.itemCount', { count: pendingItems.length })})
                   </span>
-                  {workingHoursPriority ? (
-                    <span className="text-xs text-bambu-green">{t('settings.workingHoursTitle', 'Working Hours')}</span>
-                  ) : (
-                    <span className="hidden sm:inline text-xs text-bambu-gray ml-2" title={t('queue.reorderHint')}>
-                      {t('queue.dragToReorder')}
-                    </span>
-                  )}
+                  <span className="hidden sm:inline text-xs text-bambu-gray ml-2" title={workingHoursActive
+                    ? t('queue.workingHoursDragHint', 'Moving a job overrides Working Hours for that job.')
+                    : t('queue.reorderHint')}>
+                    {t('queue.dragToReorder')}
+                  </span>
                 </h2>
                 <div className="flex items-center gap-2">
                   <select
@@ -3180,6 +3175,7 @@ export function QueuePage() {
                 collisionDetection={closestCenter}
                 onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
+                onDragCancel={() => setActiveDragId(null)}
               >
                 <SortableContext
                   items={sortableIds}
@@ -3208,7 +3204,8 @@ export function QueuePage() {
                           aggregateForRows={aggregateForRows}
                           {...rowMovers(groupedRows, idx)}
                           workingHoursMovedIds={workingHoursMovedIds}
-                          reorderDisabled={workingHoursPriority}
+                          clearManualPosition={hasPermission('queue:reorder') ? clearManualPosition : undefined}
+                          reorderDisabled={!canReorderManually}
                           onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
                         />
                       ))}
@@ -3250,7 +3247,8 @@ export function QueuePage() {
                                   aggregateForRows={aggregateForRows}
                                   {...rowMovers(bucket.rows, idx)}
                                   workingHoursMovedIds={workingHoursMovedIds}
-                                  reorderDisabled={workingHoursPriority}
+                                  clearManualPosition={hasPermission('queue:reorder') ? clearManualPosition : undefined}
+                                  reorderDisabled={!canReorderManually}
                                   onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
                                 />
                               ))}

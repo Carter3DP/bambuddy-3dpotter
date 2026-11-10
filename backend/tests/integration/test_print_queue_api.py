@@ -3761,7 +3761,7 @@ class TestReorderEndpoint:
             json={
                 "items": [
                     {"id": item1.id, "position": 2},
-                    {"id": item2.id, "position": 1},
+                    {"id": item2.id, "position": 1, "working_hours_manual_position": True},
                 ]
             },
         )
@@ -3771,6 +3771,16 @@ class TestReorderEndpoint:
         await db_session.refresh(item2)
         assert item1.position == 2
         assert item2.position == 1
+        assert item1.working_hours_manual_position is False
+        assert item2.working_hours_manual_position is True
+
+        response = await async_client.post(
+            "/api/v1/queue/reorder",
+            json={"items": [{"id": item2.id, "position": 1, "working_hours_manual_position": False}]},
+        )
+        assert response.status_code == 200
+        await db_session.refresh(item2)
+        assert item2.working_hours_manual_position is False
 
 
 class TestForceColorOverridesAreScopedToThePlate:

@@ -1666,13 +1666,6 @@ class PrintScheduler:
             hours = WorkingHours.from_storage(await self._get_setting(db, "queue_working_hours"))
             now = datetime.now(timezone.utc)
             deadline = hours.active_until(now)
-            if deadline is not None and await self._get_int_setting(
-                db, "queue_working_hours_manual_until", default=0
-            ) == int(deadline.timestamp()):
-                # The override applies only to this working window. Respect saved
-                # positions ahead of both automatic ordering preferences.
-                deadline = None
-                sjf_enabled = False
             duration = PrintQueueItem.print_time_seconds
             order: list[SQLColumnExpression[Any]] = []
             if deadline is not None:
@@ -1705,6 +1698,12 @@ class PrintScheduler:
             if self._inflight:
                 inflight_ids = set(self._inflight)
                 items = [it for it in items if it.id not in inflight_ids]
+
+            if deadline is not None and any(item.working_hours_manual_position for item in items):
+                # Reserve each manually placed job's slot; automatic jobs fill the gaps in scheduler order.
+                manual_order = sorted(items, key=lambda item: (item.position, item.id))
+                automatic = iter(item for item in items if not item.working_hours_manual_position)
+                items = [item if item.working_hours_manual_position else next(automatic) for item in manual_order]
 
             # Read plate-clear setting once per queue check. Default MUST be
             # False to match the schema (SettingsSchema.require_plate_clear
