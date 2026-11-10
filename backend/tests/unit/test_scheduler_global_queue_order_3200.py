@@ -67,6 +67,8 @@ async def _add(
     print_time=None,
     manual_start=False,
     working_hours_manual=False,
+    working_hours_position=None,
+    working_hours_until=None,
 ):
     async with ctx.session_maker() as db:
         lib = LibraryFile(
@@ -87,6 +89,8 @@ async def _add(
             print_time_seconds=print_time,
             manual_start=manual_start,
             working_hours_manual_position=working_hours_manual,
+            working_hours_position=working_hours_position,
+            working_hours_until=working_hours_until,
         )
         db.add(item)
         await db.commit()
@@ -288,15 +292,26 @@ async def test_working_hours_dispatch(ctx, monkeypatch, hour, later_time, manual
     assert await _run(ctx, idle_printers={1}, now=now) == {expected: 1}
 
 
-@pytest.mark.parametrize("manual_position", [1, 2])
-async def test_working_hours_reserves_only_the_manually_placed_job(ctx, monkeypatch, manual_position):
+@pytest.mark.parametrize(
+    ("manual_position", "hour", "expected"), [(1, 9, "manual"), (2, 9, "fitting"), (1, 17, "first")]
+)
+async def test_working_hours_manual_order_preserves_normal_positions(ctx, monkeypatch, manual_position, hour, expected):
     monkeypatch.setenv("TZ", "UTC")
     await _set(ctx, "queue_working_hours", '{"enabled":true,"start":"08:30","end":"16:30"}')
-    await _set(ctx, "queue_shortest_first", "true")
-    manual = await _pinned(ctx, manual_position, print_time=16 * 3600, working_hours_manual=True)
-    await _any(ctx, 3 - manual_position, print_time=9 * 3600)
-    fitting = await _any(ctx, 3, print_time=5 * 3600)
+    window = int(datetime(2026, 11, 9, 16, 30, tzinfo=timezone.utc).timestamp())
+    first = await _any(ctx, 1, print_time=9 * 3600, working_hours_position=3, working_hours_until=window)
+    fitting = await _any(
+        ctx, 2, print_time=5 * 3600, working_hours_position=3 - manual_position, working_hours_until=window
+    )
+    manual = await _pinned(
+        ctx,
+        3,
+        print_time=16 * 3600,
+        working_hours_manual=True,
+        working_hours_position=manual_position,
+        working_hours_until=window,
+    )
 
-    now = datetime(2026, 11, 9, 9, tzinfo=timezone.utc)
-    expected = manual if manual_position == 1 else fitting
-    assert await _run(ctx, idle_printers={1}, now=now) == {expected: 1}
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+    ids = {"first": first, "fitting": fitting, "manual": manual}
+    assert await _run(ctx, idle_printers={1}, now=now) == {ids[expected]: 1}

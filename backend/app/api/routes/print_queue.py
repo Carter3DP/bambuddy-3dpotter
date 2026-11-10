@@ -39,6 +39,7 @@ from backend.app.models.print_batch import PrintBatch, PrintBatchPlate
 from backend.app.models.print_queue import PrintQueueItem, PrintQueueVariant
 from backend.app.models.printer import Printer
 from backend.app.models.project import Project
+from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     ColorSubstitution,
@@ -60,6 +61,7 @@ from backend.app.schemas.print_queue import (
     QueueVariantCreate,
     QueueVariantSummary,
 )
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.services.filament_deficit import compute_deficit_for_queue_item
 from backend.app.services.filament_requirements import overrides_for_plate
 from backend.app.services.finance_budget import release_budget_reservation, validate_print_budget
@@ -545,6 +547,8 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # SJF scheduling
         "been_jumped": item.been_jumped,
         "working_hours_manual_position": item.working_hours_manual_position,
+        "working_hours_position": item.working_hours_position,
+        "working_hours_until": item.working_hours_until,
         # Auto-print G-code injection
         "gcode_injection": item.gcode_injection,
         # H2C rack-swap nozzle pick (#1780)
@@ -2749,15 +2753,28 @@ async def reorder_queue(
     _: User | None = RequireAnyPermissionIfAuthEnabled(Permission.QUEUE_REORDER, Permission.QUEUE_UPDATE_ALL),
     printer_scope: PrinterScope = RequestPrinterScope,
 ):
-    """Bulk update positions for queue items."""
+    """Bulk update the normal queue or the active Working Hours order."""
+    window = data.working_hours_until
+    if window is not None:
+        stored = await db.scalar(select(Settings.value).where(Settings.key == "queue_working_hours"))
+        deadline = WorkingHours.from_storage(stored).active_until(datetime.now(timezone.utc))
+        if deadline is None or int(deadline.timestamp()) != window:
+            raise HTTPException(status_code=409, detail="The Working Hours window has changed. Refresh the queue.")
+
     for reorder_item in data.items:
         result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == reorder_item.id))
         item = result.scalar_one_or_none()
         # Jobs on printers the caller can't see keep their place (#1727)
         if item and item.status == "pending" and printer_scope.allows(item.printer_id):
-            item.position = reorder_item.position
-            if reorder_item.working_hours_manual_position is not None:
-                item.working_hours_manual_position = reorder_item.working_hours_manual_position
+            if window is None:
+                item.position = reorder_item.position
+            else:
+                if item.working_hours_until != window:
+                    item.working_hours_manual_position = False
+                item.working_hours_position = reorder_item.position
+                item.working_hours_until = window
+                if reorder_item.working_hours_manual_position is not None:
+                    item.working_hours_manual_position = reorder_item.working_hours_manual_position
 
     await db.commit()
     logger.info("Reordered %s queue items", len(data.items))

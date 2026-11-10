@@ -1,6 +1,8 @@
 """Integration tests for Print Queue API endpoints."""
 
 import json
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
@@ -3741,7 +3743,7 @@ class TestReorderEndpoint:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_reorder_accepts_unique_positions(
-        self, async_client: AsyncClient, db_session, printer_factory, archive_factory
+        self, async_client: AsyncClient, db_session, printer_factory, archive_factory, monkeypatch
     ):
         """Reorder with unique positions succeeds and updates them in DB."""
         from backend.app.models.print_queue import PrintQueueItem
@@ -3761,7 +3763,7 @@ class TestReorderEndpoint:
             json={
                 "items": [
                     {"id": item1.id, "position": 2},
-                    {"id": item2.id, "position": 1, "working_hours_manual_position": True},
+                    {"id": item2.id, "position": 1},
                 ]
             },
         )
@@ -3771,16 +3773,34 @@ class TestReorderEndpoint:
         await db_session.refresh(item2)
         assert item1.position == 2
         assert item2.position == 1
-        assert item1.working_hours_manual_position is False
-        assert item2.working_hours_manual_position is True
+        monkeypatch.setenv("TZ", "UTC")
+        db_session.add(Settings(key="queue_working_hours", value='{"enabled":true,"start":"08:30","end":"16:30"}'))
+        await db_session.commit()
+        window = int(datetime(2026, 11, 9, 16, 30, tzinfo=timezone.utc).timestamp())
+        payload = {
+            "working_hours_until": window,
+            "items": [
+                {"id": item1.id, "position": 1, "working_hours_manual_position": True},
+                {"id": item2.id, "position": 2},
+            ],
+        }
 
-        response = await async_client.post(
-            "/api/v1/queue/reorder",
-            json={"items": [{"id": item2.id, "position": 1, "working_hours_manual_position": False}]},
-        )
-        assert response.status_code == 200
-        await db_session.refresh(item2)
-        assert item2.working_hours_manual_position is False
+        with patch("backend.app.api.routes.print_queue.datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 9, 9, tzinfo=timezone.utc)
+            response = await async_client.post("/api/v1/queue/reorder", json=payload)
+            assert response.status_code == 200
+
+            await db_session.refresh(item1)
+            await db_session.refresh(item2)
+            assert (item1.position, item2.position) == (2, 1)
+            assert (item1.working_hours_position, item2.working_hours_position) == (1, 2)
+            assert item1.working_hours_until == window
+            assert item1.working_hours_manual_position is True
+            assert item2.working_hours_manual_position is False
+
+            clock.now.return_value = datetime(2026, 11, 9, 16, 30, tzinfo=timezone.utc)
+            response = await async_client.post("/api/v1/queue/reorder", json=payload)
+            assert response.status_code == 409
 
 
 class TestForceColorOverridesAreScopedToThePlate:

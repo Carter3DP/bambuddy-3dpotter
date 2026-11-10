@@ -39,6 +39,7 @@ interface QueueTimelineViewProps {
    *  scheduler had no intention of running (#3043). */
   sjfEnabled: boolean;
   workingSecondsLeft?: number;
+  workingHoursUntil?: number;
   onItemClick: (item: PrintQueueItem) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }
@@ -66,6 +67,7 @@ export function QueueTimelineView({
   printerStatuses,
   sjfEnabled,
   workingSecondsLeft,
+  workingHoursUntil,
   onItemClick,
   t,
 }: QueueTimelineViewProps) {
@@ -109,7 +111,7 @@ export function QueueTimelineView({
     // Chain-end timestamp per lane (where the next pending item's bar starts).
     const chainEndByLane = new Map<string, number>();
 
-    const pendingOrder = sortQueueItems(queueItems.filter(item => item.status === 'pending'), sjfEnabled, workingSecondsLeft ?? 0);
+    const pendingOrder = sortQueueItems(queueItems.filter(item => item.status === 'pending'), sjfEnabled, workingSecondsLeft ?? 0, workingHoursUntil);
     for (const item of [...queueItems.filter(item => item.status !== 'pending'), ...pendingOrder]) {
       if (item.status === 'printing') {
         const status = item.printer_id != null ? printerStatuses[item.printer_id] : undefined;
@@ -175,7 +177,7 @@ export function QueueTimelineView({
       }
     }
     return result;
-  }, [queueItems, printerStatuses, nowMs, sjfEnabled, workingSecondsLeft]);
+  }, [queueItems, printerStatuses, nowMs, sjfEnabled, workingSecondsLeft, workingHoursUntil]);
 
   // Lanes: every printer + every distinct target_model with queue activity
   // + an "unassigned" lane if needed. Printers that have NO events queued

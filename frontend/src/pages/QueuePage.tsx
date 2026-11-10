@@ -86,7 +86,7 @@ import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { ColorSubstitutionNotes } from '../components/ColorSubstitutionNotes';
 import { QueueTimelineView } from '../components/QueueTimelineView';
-import { compareQueueOrder, sortQueueItems } from '../utils/queueOrder';
+import { hasWorkingHoursManualPosition, sortQueueItems } from '../utils/queueOrder';
 import { BatchOrdersView } from '../components/BatchOrdersView';
 import { ThumbnailHoverPreview } from '../components/ThumbnailHoverPreview';
 import { buildLoadedFilaments, type LoadedFilament } from '../hooks/useFilamentMapping';
@@ -578,6 +578,7 @@ function SortableQueueItem({
   onMoveDown,
   reorderDisabled = false,
   movedByWorkingHours = false,
+  hasManualPosition = false,
   onClearManualPosition,
   timeFormat = 'system',
   isSelected = false,
@@ -604,6 +605,7 @@ function SortableQueueItem({
   onMoveDown?: () => void;
   reorderDisabled?: boolean;
   movedByWorkingHours?: boolean;
+  hasManualPosition?: boolean;
   onClearManualPosition?: () => void;
   timeFormat?: TimeFormat;
   isSelected?: boolean;
@@ -842,7 +844,7 @@ function SortableQueueItem({
               {(platesData?.is_multi_plate ?? false) && item.plate_id !== undefined && item.plate_id !== null && ` • ${plates.find(plate => plate.index === item.plate_id)?.name || t('queue.plateNumber', { index: item.plate_id })}`}
             </p>
             {movedByWorkingHours && <WorkingHoursBadge t={t} />}
-            {isPending && item.working_hours_manual_position && (
+            {isPending && hasManualPosition && (
               <button
                 type="button"
                 disabled={!onClearManualPosition}
@@ -1254,6 +1256,7 @@ interface QueueRowRenderProps {
   // measured from (#2740).
   etaEligibleIds: Set<number>;
   workingHoursMovedIds: Set<number>;
+  workingHoursUntil?: number;
   clearManualPosition?: (item: PrintQueueItem) => void;
   etaNow: number;
   aggregateForRows: (rows: QueueRow[]) => { count: number; time: number; weight: number };
@@ -1284,6 +1287,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
     t,
     etaEligibleIds,
     workingHoursMovedIds,
+    workingHoursUntil,
     clearManualPosition,
     etaNow,
     onMoveUp,
@@ -1305,6 +1309,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
         onMoveDown={onMoveDown}
         reorderDisabled={reorderDisabled}
         movedByWorkingHours={workingHoursMovedIds.has(row.item.id)}
+        hasManualPosition={hasWorkingHoursManualPosition(row.item, workingHoursUntil)}
         onClearManualPosition={clearManualPosition && (() => clearManualPosition(row.item))}
         timeFormat={timeFormat}
         isSelected={selectedItems.includes(row.item.id)}
@@ -1340,6 +1345,7 @@ function SortableBatchRow({
   t,
   etaEligibleIds,
   workingHoursMovedIds,
+  workingHoursUntil,
   clearManualPosition,
   etaNow,
   aggregateForRows,
@@ -1515,6 +1521,7 @@ function SortableBatchRow({
               key={child.id}
               item={child}
               movedByWorkingHours={workingHoursMovedIds.has(child.id)}
+              hasManualPosition={hasWorkingHoursManualPosition(child, workingHoursUntil)}
               onClearManualPosition={clearManualPosition && (() => clearManualPosition(child))}
               onEdit={() => setEditItem(child)}
               onCancel={() => setConfirmAction({ type: 'cancel', item: child })}
@@ -2064,11 +2071,19 @@ export function QueuePage() {
   });
 
   const reorderMutation = useMutation({
-    mutationFn: (items: QueueReorderItem[]) => api.reorderQueue(items),
+    mutationFn: ({ items, window }: { items: QueueReorderItem[]; window?: number }) =>
+      api.reorderQueue(items, window),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['queue'] });
     },
-    onError: () => showToast(t('queue.toast.reorderFailed'), 'error'),
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 409) {
+        queryClient.invalidateQueries({ queryKey: ['settings'] });
+        queryClient.invalidateQueries({ queryKey: ['ui-settings'] });
+        queryClient.invalidateQueries({ queryKey: ['queue'] });
+      }
+      showToast(t('queue.toast.reorderFailed'), 'error');
+    },
   });
 
   const clearHistoryMutation = useMutation({
@@ -2199,11 +2214,12 @@ export function QueuePage() {
   const workingDeadline = parseUTCDate(settings?.queue_working_hours_active_until)?.getTime() ?? 0;
   const workingSecondsLeft = Math.max(0, (workingDeadline - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000);
   const workingHoursActive = workingSecondsLeft > 0;
+  const workingHoursUntil = workingHoursActive ? Math.floor(workingDeadline / 1000) : undefined;
   const sjfEnabled = settings?.queue_shortest_first ?? false;
   const allPending = useMemo(() => queue?.filter(item => item.status === 'pending') ?? [], [queue]);
   const dispatchOrder = useMemo(
-    () => sortQueueItems(allPending, sjfEnabled, workingSecondsLeft),
-    [allPending, sjfEnabled, workingSecondsLeft],
+    () => sortQueueItems(allPending, sjfEnabled, workingSecondsLeft, workingHoursUntil),
+    [allPending, sjfEnabled, workingSecondsLeft, workingHoursUntil],
   );
 
   const pendingItems = useMemo(() => {
@@ -2242,10 +2258,10 @@ export function QueuePage() {
   }, [allPending, dispatchOrder, pendingSortBy, pendingSortAsc, matchesLocationFilter, sjfEnabled, workingHoursActive]);
 
   const workingHoursMovedIds = useMemo(() => {
-    if (!workingHoursActive) return new Set<number>();
-    const normalOrder = sortQueueItems(allPending, sjfEnabled, 0, true);
+    if (workingHoursUntil == null) return new Set<number>();
+    const normalOrder = sortQueueItems(allPending, sjfEnabled, 0, workingHoursUntil);
     return new Set(dispatchOrder.filter((item, index) => item.id !== normalOrder[index]?.id).map(item => item.id));
-  }, [allPending, dispatchOrder, sjfEnabled, workingHoursActive]);
+  }, [allPending, dispatchOrder, sjfEnabled, workingHoursUntil]);
 
   const handleSelectAll = () => {
     const allPendingIds = pendingItems.map(i => i.id);
@@ -2519,33 +2535,34 @@ export function QueuePage() {
       ...movingItems,
       ...remaining.slice(insertAt),
     ];
-    if (!workingHoursActive) {
-      reorderMutation.mutate(reordered.map((item, index) => ({ id: item.id, position: index + 1 })));
+    if (workingHoursUntil == null) {
+      reorderMutation.mutate({ items: reordered.map((item, index) => ({ id: item.id, position: index + 1 })) });
       return;
     }
 
     const moved = new Set(movingItems.map(item => item.id));
     const reorderedVisible = reordered.values();
     const desired = dispatchOrder.map(item => matchesLocationFilter(item) ? reorderedVisible.next().value! : item);
-    const reserved = (item: PrintQueueItem) => moved.has(item.id) || item.working_hours_manual_position;
-    // Give manual jobs their selected slots while retaining the saved relative
-    // order of automatic jobs, even if Working Hours currently sorts them differently.
-    const automatic = [...allPending].sort((a, b) => compareQueueOrder(a, b, false))
-      .filter(item => !reserved(item)).values();
-    const updates = desired.flatMap((item, index) => {
-      const saved = reserved(item) ? item : automatic.next().value!;
-      if (saved.position === index + 1 && !moved.has(saved.id)) return [];
-      return [{
-        id: saved.id,
+    reorderMutation.mutate({
+      window: workingHoursUntil,
+      items: desired.map((item, index) => ({
+        id: item.id,
         position: index + 1,
-        ...(moved.has(saved.id) ? { working_hours_manual_position: true } : {}),
-      }];
+        ...(moved.has(item.id) ? { working_hours_manual_position: true } : {}),
+      })),
     });
-    reorderMutation.mutate(updates);
   };
 
   const clearManualPosition = (item: PrintQueueItem) => {
-    reorderMutation.mutate([{ id: item.id, position: item.position, working_hours_manual_position: false }]);
+    if (workingHoursUntil == null) return;
+    reorderMutation.mutate({
+      window: workingHoursUntil,
+      items: [{
+        id: item.id,
+        position: item.working_hours_position ?? item.position,
+        working_hours_manual_position: false,
+      }],
+    });
   };
 
   // Build up/down thunks for the row at `idx` within its displayed sibling
@@ -3009,6 +3026,7 @@ export function QueuePage() {
           printerStatuses={printerStatusMap}
           sjfEnabled={sjfEnabled}
           workingSecondsLeft={workingSecondsLeft}
+          workingHoursUntil={workingHoursUntil}
           onItemClick={(item) => {
             if (['completed', 'failed', 'skipped', 'cancelled'].includes(item.status)) {
               setRequeueItem(item);
@@ -3204,6 +3222,7 @@ export function QueuePage() {
                           aggregateForRows={aggregateForRows}
                           {...rowMovers(groupedRows, idx)}
                           workingHoursMovedIds={workingHoursMovedIds}
+                          workingHoursUntil={workingHoursUntil}
                           clearManualPosition={hasPermission('queue:reorder') ? clearManualPosition : undefined}
                           reorderDisabled={!canReorderManually}
                           onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
@@ -3247,6 +3266,7 @@ export function QueuePage() {
                                   aggregateForRows={aggregateForRows}
                                   {...rowMovers(bucket.rows, idx)}
                                   workingHoursMovedIds={workingHoursMovedIds}
+                                  workingHoursUntil={workingHoursUntil}
                                   clearManualPosition={hasPermission('queue:reorder') ? clearManualPosition : undefined}
                                   reorderDisabled={!canReorderManually}
                                   onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}

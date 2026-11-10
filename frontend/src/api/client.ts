@@ -2880,6 +2880,8 @@ export interface PrintQueueItem {
   // Shortest-job-first scheduling
   been_jumped?: boolean;
   working_hours_manual_position?: boolean;
+  working_hours_position?: number | null;
+  working_hours_until?: number | null;
   // Auto-print G-code injection
   gcode_injection?: boolean;
   cleanup_library_after_dispatch?: boolean;
@@ -6816,10 +6818,10 @@ export const api = {
    *  last run a batch order could re-queue its plate from (#2960). */
   removeFromQueue: (id: number) =>
     request<{ message: string; deleted: boolean }>(`/queue/${id}`, { method: 'DELETE' }),
-  reorderQueue: (items: QueueReorderItem[]) =>
+  reorderQueue: (items: QueueReorderItem[], workingHoursUntil?: number) =>
     request<{ message: string }>('/queue/reorder', {
       method: 'POST',
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ items, working_hours_until: workingHoursUntil }),
     }),
   cancelQueueItem: (id: number) =>
     request<{ message: string }>(`/queue/${id}/cancel`, { method: 'POST' }),

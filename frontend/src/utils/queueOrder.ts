@@ -22,6 +22,8 @@ interface OrderableQueueItem {
   target_model?: string | null;
   been_jumped?: boolean;
   working_hours_manual_position?: boolean;
+  working_hours_position?: number | null;
+  working_hours_until?: number | null;
   print_time_seconds?: number | null;
   position: number;
   id?: number;
@@ -82,18 +84,26 @@ export function compareQueueOrder(
 }
 
 
-/** Keep manual jobs in their saved slots while automatic jobs fill the gaps. */
+export function hasWorkingHoursManualPosition(item: OrderableQueueItem, workingHoursUntil?: number): boolean {
+  return workingHoursUntil != null && item.working_hours_until === workingHoursUntil && !!item.working_hours_manual_position;
+}
+
+/** Keep manual jobs in their temporary slots while automatic jobs fill the gaps. */
 export function sortQueueItems<T extends OrderableQueueItem>(
   items: T[],
   sjfEnabled: boolean,
   workingSecondsLeft: number,
-  preserveManualSlots = workingSecondsLeft > 0,
+  workingHoursUntil?: number,
 ): T[] {
   const automaticOrder = [...items].sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));
-  if (!preserveManualSlots || !items.some(item => item.working_hours_manual_position)) return automaticOrder;
+  const reserved = (item: T) => hasWorkingHoursManualPosition(item, workingHoursUntil);
+  if (!items.some(reserved)) return automaticOrder;
 
-  const automatic = automaticOrder.filter(item => !item.working_hours_manual_position).values();
-  return [...items].sort((a, b) => compareQueueOrder(a, b, false)).map(item =>
-    item.working_hours_manual_position ? item : automatic.next().value!,
+  const slot = (item: T) => item.working_hours_until === workingHoursUntil
+    ? item.working_hours_position ?? item.position
+    : item.position;
+  const automatic = automaticOrder.filter(item => !reserved(item)).values();
+  return [...items].sort((a, b) => slot(a) - slot(b) || (a.id ?? 0) - (b.id ?? 0)).map(item =>
+    reserved(item) ? item : automatic.next().value!,
   );
 }

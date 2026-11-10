@@ -1699,11 +1699,27 @@ class PrintScheduler:
                 inflight_ids = set(self._inflight)
                 items = [it for it in items if it.id not in inflight_ids]
 
-            if deadline is not None and any(item.working_hours_manual_position for item in items):
-                # Reserve each manually placed job's slot; automatic jobs fill the gaps in scheduler order.
-                manual_order = sorted(items, key=lambda item: (item.position, item.id))
-                automatic = iter(item for item in items if not item.working_hours_manual_position)
-                items = [item if item.working_hours_manual_position else next(automatic) for item in manual_order]
+            if deadline is not None:
+                window = int(deadline.timestamp())
+                reserved = {
+                    item.id
+                    for item in items
+                    if item.working_hours_until == window and item.working_hours_manual_position
+                }
+                if reserved:
+                    # Reserve slots from this window's order. The normal queue
+                    # positions still define the order once the window ends.
+                    slots = sorted(
+                        items,
+                        key=lambda item: (
+                            item.working_hours_position
+                            if item.working_hours_until == window and item.working_hours_position is not None
+                            else item.position,
+                            item.id,
+                        ),
+                    )
+                    automatic = iter(item for item in items if item.id not in reserved)
+                    items = [item if item.id in reserved else next(automatic) for item in slots]
 
             # Read plate-clear setting once per queue check. Default MUST be
             # False to match the schema (SettingsSchema.require_plate_clear
