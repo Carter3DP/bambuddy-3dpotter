@@ -150,6 +150,7 @@ class TestWhatItExposes:
             "queue_shortest_first",
             "queue_working_hours",
             "queue_working_hours_active_until",
+            "queue_working_hours_manual_until",
             "use_slicer_api",
             "open_in_slicer",
             "preferred_slicer",

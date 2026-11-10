@@ -276,3 +276,18 @@ async def test_working_hours_dispatch(ctx, monkeypatch, hour, later_time, manual
 
     expected = first if expected_position == 1 else second
     assert await _run(ctx, idle_printers={1}, now=now) == {expected: 1}
+
+
+@pytest.mark.parametrize(("day", "manual_first"), [(9, True), (10, False)])
+async def test_working_hours_manual_order_only_overrides_the_selected_window(ctx, monkeypatch, day, manual_first):
+    monkeypatch.setenv("TZ", "UTC")
+    await _set(ctx, "queue_working_hours", '{"enabled":true,"start":"08:30","end":"16:30"}')
+    await _set(ctx, "queue_shortest_first", "true")
+    closing = datetime(2026, 11, 9, 16, 30, tzinfo=timezone.utc)
+    await _set(ctx, "queue_working_hours_manual_until", str(int(closing.timestamp())))
+    first = await _pinned(ctx, 1, print_time=16 * 3600)
+    second = await _any(ctx, 2, print_time=5 * 3600)
+
+    now = datetime(2026, 11, day, 9, tzinfo=timezone.utc)
+    expected = first if manual_first else second
+    assert await _run(ctx, idle_printers={1}, now=now) == {expected: 1}

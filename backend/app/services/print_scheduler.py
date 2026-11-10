@@ -1666,6 +1666,13 @@ class PrintScheduler:
             hours = WorkingHours.from_storage(await self._get_setting(db, "queue_working_hours"))
             now = datetime.now(timezone.utc)
             deadline = hours.active_until(now)
+            if deadline is not None and await self._get_int_setting(
+                db, "queue_working_hours_manual_until", default=0
+            ) == int(deadline.timestamp()):
+                # The override applies only to this working window. Respect saved
+                # positions ahead of both automatic ordering preferences.
+                deadline = None
+                sjf_enabled = False
             duration = PrintQueueItem.print_time_seconds
             order: list[SQLColumnExpression[Any]] = []
             if deadline is not None:

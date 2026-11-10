@@ -1598,6 +1598,7 @@ export interface AppSettings {
   queue_shortest_first: boolean;
   queue_working_hours: { enabled: boolean; start: string; end: string };
   queue_working_hours_active_until: string | null;
+  queue_working_hours_manual_until: number;
   // How many printers the queue may upload to at once (#2555). 1 restores the
   // old strictly-serial behaviour, where every printer waited out every other
   // printer's transfer.

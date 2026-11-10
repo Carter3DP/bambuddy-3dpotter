@@ -555,6 +555,15 @@ function CalibrationModeToggle({
   );
 }
 
+function WorkingHoursBadge({ t }: { t: (key: string, options?: Record<string, unknown>) => string }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded bg-bambu-green/15 px-1.5 py-0.5 text-[10px] text-bambu-green">
+      <Clock aria-hidden="true" className="h-3 w-3" />
+      {t('queue.workingHoursMoved', { defaultValue: 'Moved by Working Hours' })}
+    </span>
+  );
+}
+
 // Sortable queue item for drag and drop
 function SortableQueueItem({
   item,
@@ -568,6 +577,7 @@ function SortableQueueItem({
   onMoveUp,
   onMoveDown,
   reorderDisabled = false,
+  movedByWorkingHours = false,
   timeFormat = 'system',
   isSelected = false,
   onToggleSelect,
@@ -592,6 +602,7 @@ function SortableQueueItem({
   onMoveUp?: () => void;
   onMoveDown?: () => void;
   reorderDisabled?: boolean;
+  movedByWorkingHours?: boolean;
   timeFormat?: TimeFormat;
   isSelected?: boolean;
   onToggleSelect?: () => void;
@@ -828,6 +839,7 @@ function SortableQueueItem({
               {queueItemDisplayName(item, (n) => t('common.plusNMore', { count: n }))}
               {(platesData?.is_multi_plate ?? false) && item.plate_id !== undefined && item.plate_id !== null && ` • ${plates.find(plate => plate.index === item.plate_id)?.name || t('queue.plateNumber', { index: item.plate_id })}`}
             </p>
+            {movedByWorkingHours && <WorkingHoursBadge t={t} />}
             {item.archive_id ? (
               <Link
                 to={`/archives?highlight=${item.archive_id}`}
@@ -1225,6 +1237,7 @@ interface QueueRowRenderProps {
   // Items that qualify for an "if started now" ETA, and the shared clock it is
   // measured from (#2740).
   etaEligibleIds: Set<number>;
+  workingHoursMovedIds: Set<number>;
   etaNow: number;
   aggregateForRows: (rows: QueueRow[]) => { count: number; time: number; weight: number };
   // Mobile tap-to-reorder (#2667). onMoveUp/onMoveDown move this whole row
@@ -1253,6 +1266,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
     canModify,
     t,
     etaEligibleIds,
+    workingHoursMovedIds,
     etaNow,
     onMoveUp,
     onMoveDown,
@@ -1272,6 +1286,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
         onMoveUp={onMoveUp}
         onMoveDown={onMoveDown}
         reorderDisabled={reorderDisabled}
+        movedByWorkingHours={workingHoursMovedIds.has(row.item.id)}
         timeFormat={timeFormat}
         isSelected={selectedItems.includes(row.item.id)}
         onToggleSelect={() => handleToggleSelect(row.item.id)}
@@ -1305,6 +1320,7 @@ function SortableBatchRow({
   canModify,
   t,
   etaEligibleIds,
+  workingHoursMovedIds,
   etaNow,
   aggregateForRows,
   onMoveUp,
@@ -1430,6 +1446,7 @@ function SortableBatchRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <p className="text-sm sm:text-base text-white font-medium truncate">{batchRow.batchName}</p>
+            {collapsed && allChildIds.some(id => workingHoursMovedIds.has(id)) && <WorkingHoursBadge t={t} />}
             <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] sm:text-xs bg-cyan-100 dark:bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 rounded border border-cyan-300 dark:border-cyan-500/30">
               {t('queue.batch.label', { count: agg.count })}
             </span>
@@ -1478,6 +1495,7 @@ function SortableBatchRow({
               reorderDisabled={reorderDisabled}
               key={child.id}
               item={child}
+              movedByWorkingHours={workingHoursMovedIds.has(child.id)}
               onEdit={() => setEditItem(child)}
               onCancel={() => setConfirmAction({ type: 'cancel', item: child })}
               onRemove={() => {}}
@@ -1943,6 +1961,15 @@ export function QueuePage() {
     },
   });
 
+  const manualOrderMutation = useMutation({
+    mutationFn: (until: number) => api.updateSettings({ queue_working_hours_manual_until: until }),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['settings'] }),
+      queryClient.invalidateQueries({ queryKey: ['ui-settings'] }),
+    ]),
+    onError: () => showToast(t('queue.workingHoursOverrideFailed', 'Could not update the manual queue override.'), 'error'),
+  });
+
   const cancelMutation = useMutation({
     mutationFn: (id: number) => api.cancelQueueItem(id),
     onSuccess: () => {
@@ -2159,9 +2186,12 @@ export function QueuePage() {
   }, [filterLocation, printers]);
 
   const workingDeadline = parseUTCDate(settings?.queue_working_hours_active_until)?.getTime() ?? 0;
-  const workingSecondsLeft = Math.max(0, (workingDeadline - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000);
-  const workingHoursActive = workingSecondsLeft > 0;
-  const sjfEnabled = settings?.queue_shortest_first ?? false;
+  const secondsUntilClosing = Math.max(0, (workingDeadline - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000);
+  const workingHoursActive = secondsUntilClosing > 0;
+  const manualOrderActive = workingHoursActive && settings?.queue_working_hours_manual_until === Math.floor(workingDeadline / 1000);
+  const workingHoursPriority = workingHoursActive && !manualOrderActive;
+  const workingSecondsLeft = workingHoursPriority ? secondsUntilClosing : 0;
+  const sjfEnabled = !manualOrderActive && (settings?.queue_shortest_first ?? false);
   const schedulerOrder = useCallback(
     (a: PrintQueueItem, b: PrintQueueItem) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft),
     [sjfEnabled, workingSecondsLeft],
@@ -2206,6 +2236,12 @@ export function QueuePage() {
       return pendingSortAsc ? cmp : -cmp;
     });
   }, [queue, pendingSortBy, pendingSortAsc, matchesLocationFilter, filterLocation, sjfEnabled, workingHoursActive, schedulerOrder]);
+
+  const workingHoursMovedIds = useMemo(() => {
+    if (!workingHoursPriority) return new Set<number>();
+    const normalOrder = [...pendingItems].sort((a, b) => compareQueueOrder(a, b, sjfEnabled));
+    return new Set(pendingItems.filter((item, index) => item.id !== normalOrder[index]?.id).map(item => item.id));
+  }, [pendingItems, sjfEnabled, workingHoursPriority]);
 
   const handleSelectAll = () => {
     const allPendingIds = pendingItems.map(i => i.id);
@@ -2379,7 +2415,7 @@ export function QueuePage() {
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveDragId(null);
-    if (workingHoursActive || !over || active.id === over.id) return;
+    if (workingHoursPriority || !over || active.id === over.id) return;
 
     // Resolve dragged source → movingIds (preserving order from pendingItems).
     //   - `batch-<id>`: every child of that batch, in their current order
@@ -2470,9 +2506,7 @@ export function QueuePage() {
   // automatic dispatch preferences off, when the list shows manual order.
   const canReorderManually =
     hasPermission('queue:reorder') &&
-    pendingSortBy === 'position' &&
-    !sjfEnabled &&
-    !workingHoursActive;
+    (manualOrderActive || (pendingSortBy === 'position' && !sjfEnabled && !workingHoursPriority));
 
   const rowItemIds = (row: QueueRow): number[] =>
     row.kind === 'item' ? [row.item.id] : row.items.map((i) => i.id);
@@ -2932,12 +2966,26 @@ export function QueuePage() {
                 ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
                 : 'bg-bambu-dark-secondary border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray'
             }`}
+            disabled={manualOrderActive}
             title={t('queue.sjf.tooltip', 'Shortest Job First — scheduler prioritizes shorter prints')}
           >
             <Snail className="w-4 h-4" />
             <span className="hidden sm:inline">{t('queue.sjf.label', 'SJF')}</span>
             <span className={`w-1.5 h-1.5 rounded-full ${settings?.queue_shortest_first ? 'bg-bambu-green' : 'bg-bambu-gray'}`} />
           </button>
+          {workingHoursActive && hasPermission('settings:update') && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={manualOrderMutation.isPending}
+              onClick={() => manualOrderMutation.mutate(manualOrderActive ? 0 : Math.floor(workingDeadline / 1000))}
+              title={t('queue.workingHoursOverrideHint', 'Use saved queue positions for dispatch until this working window closes.')}
+            >
+              {manualOrderActive
+                ? t('queue.workingHoursResume', 'Resume Working Hours order')
+                : t('queue.workingHoursOverride', 'Use manual order')}
+            </Button>
+          )}
         </div>
       )}
 
@@ -3035,8 +3083,8 @@ export function QueuePage() {
                   <span className="text-xs sm:text-sm font-normal text-bambu-gray">
                     ({t('queue.itemCount', { count: pendingItems.length })})
                   </span>
-                  {workingHoursActive ? (
-                    <span className="text-xs text-bambu-green">{t('settings.workingHoursTitle')}</span>
+                  {workingHoursPriority ? (
+                    <span className="text-xs text-bambu-green">{t('settings.workingHoursTitle', 'Working Hours')}</span>
                   ) : (
                     <span className="hidden sm:inline text-xs text-bambu-gray ml-2" title={t('queue.reorderHint')}>
                       {t('queue.dragToReorder')}
@@ -3159,7 +3207,8 @@ export function QueuePage() {
                           etaNow={etaNow}
                           aggregateForRows={aggregateForRows}
                           {...rowMovers(groupedRows, idx)}
-                          reorderDisabled={workingHoursActive}
+                          workingHoursMovedIds={workingHoursMovedIds}
+                          reorderDisabled={workingHoursPriority}
                           onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
                         />
                       ))}
@@ -3200,7 +3249,8 @@ export function QueuePage() {
                                   etaNow={etaNow}
                                   aggregateForRows={aggregateForRows}
                                   {...rowMovers(bucket.rows, idx)}
-                                  reorderDisabled={workingHoursActive}
+                                  workingHoursMovedIds={workingHoursMovedIds}
+                                  reorderDisabled={workingHoursPriority}
                                   onMoveBlock={canReorderManually ? moveBlockRelativeTo : undefined}
                                 />
                               ))}

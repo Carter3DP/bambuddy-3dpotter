@@ -473,6 +473,51 @@ describe('QueuePage wiring: permission gates', () => {
     await waitFor(() => expect(screen.getAllByTitle('Move Down')).toHaveLength(2));
   });
 
+  it('marks items moved by Working Hours and allows manual reordering until the window closes', async () => {
+    signInWith(['queue:read', 'queue:reorder', 'settings:read', 'settings:update']);
+    useQueue([{ ...pendingA, print_time_seconds: 7200 }, pendingB, { ...pendingC, print_time_seconds: 7200 }]);
+    const deadline = Math.floor(Date.now() / 1000) + 5400;
+    const settings = {
+      queue_working_hours: { enabled: true, start: '08:30', end: '16:30' },
+      queue_working_hours_active_until: new Date(deadline * 1000).toISOString(),
+      queue_working_hours_manual_until: 0,
+    };
+    server.use(
+      http.get('*/api/v1/settings/', () => HttpResponse.json(settings)),
+      http.put('*/api/v1/settings/', async ({ request }) => {
+        await capture(request);
+        const update = calls.at(-1)?.body as { queue_working_hours_manual_until: number };
+        settings.queue_working_hours_manual_until = update.queue_working_hours_manual_until;
+        return HttpResponse.json(settings);
+      }),
+      http.post('*/api/v1/queue/reorder', async ({ request }) => {
+        await capture(request);
+        return HttpResponse.json({ message: 'ok' });
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<QueuePage />);
+    expect(await screen.findAllByText('Moved by Working Hours')).toHaveLength(2);
+    expect(screen.queryByTitle('Move Down')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Use manual order' }));
+    await screen.findByRole('button', { name: 'Resume Working Hours order' });
+    expect(screen.queryByText('Moved by Working Hours')).toBeNull();
+    await user.click(screen.getAllByTitle('Move Down').find(button => !button.hasAttribute('disabled'))!);
+    await waitFor(() => expect(mutationCalls()).toEqual([
+      expect.objectContaining({ body: { queue_working_hours_manual_until: deadline } }),
+      expect.objectContaining({
+        path: '/api/v1/queue/reorder',
+        body: { items: [{ id: pendingB.id, position: 1 }, { id: pendingA.id, position: 2 }, { id: pendingC.id, position: 3 }] },
+      }),
+    ]));
+
+    await user.click(screen.getByRole('button', { name: 'Resume Working Hours order' }));
+    expect(await screen.findAllByText('Moved by Working Hours')).toHaveLength(2);
+    expect(mutationCalls().at(-1)?.body).toEqual({ queue_working_hours_manual_until: 0 });
+  });
+
   it('Resume-after-failure banner is hidden without queue:update_all', async () => {
     signInWith(['queue:read', 'queue:update_own']);
     useQueue([
