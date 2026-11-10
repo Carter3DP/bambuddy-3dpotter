@@ -544,12 +544,13 @@ class AppSettings(BaseModel):
     queue_keep_bed_warm: bool = Field(
         default=False,
         description=(
-            "During enabled Working Hours, while a printer awaits plate-clear in FINISH and the next item requires "
+            "While a printer awaits plate-clear in FINISH and the next queued item requires "
             "chamber heating, hold the bed hot so the chamber stays warm during the bed-clearing "
             "window. The bed is the chamber's heating element here: the hold target is "
             "queue_keep_warm_bed_temp, or the item's own bed_temperature when the slicer metadata "
             "reports a higher one. Only fires for filaments with a non-zero chamber target "
-            "(ASA, ABS, PA, PC etc.); PLA/PETG prints are skipped automatically."
+            "(ASA, ABS, PA, PC etc.); PLA/PETG prints are skipped automatically. When Working Hours is enabled, "
+            "the hold is limited to that window."
         ),
     )
     queue_keep_warm_bed_temp: int = Field(

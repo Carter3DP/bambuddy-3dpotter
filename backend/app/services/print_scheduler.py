@@ -2670,7 +2670,7 @@ class PrintScheduler:
                     dispatch_ids,
                     busy_printers - backoff_printers,
                     require_plate_clear,
-                    within_working_hours=hours.active_until(datetime.now(timezone.utc)) is not None,
+                    working_hours=hours,
                 )
             except Exception as e:
                 logger.warning("Keep-warm pass failed, continuing with dispatch: %s", e, exc_info=True)
@@ -7232,9 +7232,9 @@ class PrintScheduler:
         busy_printers: set[int],
         require_plate_clear: bool,
         *,
-        within_working_hours: bool,
+        working_hours: WorkingHours,
     ) -> None:
-        """Hold the bed warm during working hours when the next item needs chamber heat.
+        """Hold the bed warm when the next item needs chamber heat and the schedule allows.
 
         When a printer just finished a job (FINISH state) and the next queued
         item needs chamber heating, hold the bed hot so the chamber stays warm
@@ -7273,7 +7273,10 @@ class PrintScheduler:
 
         keep_warm_enabled = await self._get_bool_setting(db, "queue_keep_bed_warm", default=False)
         preheat_on = await self._get_bool_setting(db, "preheat_enabled", default=False)
-        gate_open = within_working_hours and keep_warm_enabled and require_plate_clear and preheat_on
+        schedule_allows_hold = (
+            not working_hours.enabled or working_hours.active_until(datetime.now(timezone.utc)) is not None
+        )
+        gate_open = schedule_allows_hold and keep_warm_enabled and require_plate_clear and preheat_on
 
         # Release sweep first — must run even when gate_open is False so a
         # printer owned by keep-warm when a gate toggles off gets released.
