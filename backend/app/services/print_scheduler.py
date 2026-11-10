@@ -1670,13 +1670,15 @@ class PrintScheduler:
             longest_first = after_hours and hours.end_of_day == "longest_first"
             next_opening = hours.next_opening(now) if longest_first else None
             if next_opening is not None:
+                # Longest-first takes precedence over SJF during the gap
+                # between working windows.
                 sjf_enabled = False
             duration = PrintQueueItem.print_time_seconds
             order: list[SQLColumnExpression[Any]] = []
             if deadline is not None:
                 seconds_left = (deadline - now).total_seconds()
                 order.append(case(((duration > 0) & (duration <= seconds_left), 0), else_=1))
-            if longest_first:
+            if next_opening is not None:
                 order.append(case((duration > 0, duration)).desc().nullslast())
             if sjf_enabled:
                 # Keep the starvation guard and sort unknown durations last.
@@ -1731,6 +1733,8 @@ class PrintScheduler:
             if hours.end_of_day == "keep" and items:
                 snapshot = await self._get_setting(db, WORKING_HOURS_SNAPSHOT_KEY)
                 if deadline is not None:
+                    # Save the effective order after reserving manual slots.
+                    # Queue positions stay intact for the restore policy.
                     saved = WorkingHoursQueueSnapshot(
                         window=int(deadline.timestamp()), ids=[item.id for item in items]
                     ).model_dump_json()
@@ -1740,6 +1744,8 @@ class PrintScheduler:
                         await upsert_setting(db, Settings, WORKING_HOURS_SNAPSHOT_KEY, saved)
                 elif ranks := WorkingHoursQueueSnapshot.ranks(snapshot, hours, now):
                     if any(item.id in ranks for item in items):
+                        # Sort stably so jobs added after the snapshot follow
+                        # the saved jobs in their normal order.
                         items.sort(key=lambda item: ranks.get(item.id, len(ranks)))
                         sjf_enabled = False
 
@@ -2100,7 +2106,10 @@ class PrintScheduler:
                         skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
                         continue
 
-                # Preserve staged jobs and their existing hold reasons.
+                # Recheck the time before considering each job: printer and
+                # filament checks earlier in this pass may have used up part
+                # of the window. Leave staged jobs to their usual hold logic
+                # unless the scheduler can release their filament hold.
                 if next_opening is not None and (not item.manual_start or item.filament_short):
                     seconds = item.print_time_seconds
                     remaining = (next_opening - datetime.now(timezone.utc)).total_seconds()

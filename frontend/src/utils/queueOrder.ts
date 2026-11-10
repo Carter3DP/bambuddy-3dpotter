@@ -1,8 +1,9 @@
 /**
  * The order the scheduler will actually dispatch pending queue items in.
  *
- * The backend decides this in SQL (`print_scheduler.check_queue`). During
- * working hours, jobs that fit before closing come first. Each group uses:
+ * Mirrors `print_scheduler.check_queue`. During Working Hours, jobs that fit
+ * before closing come first, with manual placements taking their saved slots.
+ * Within each automatic group, normal dispatch uses:
  *
  *     ORDER BY been_jumped DESC,
  *              print_time_seconds ASC NULLS LAST,
@@ -86,9 +87,10 @@ export function compareQueueOrder(
   return (a.id ?? 0) - (b.id ?? 0);
 }
 
-
 export function hasWorkingHoursManualPosition(item: OrderableQueueItem, workingHoursUntil?: number): boolean {
-  return workingHoursUntil != null && item.working_hours_until === workingHoursUntil && !!item.working_hours_manual_position;
+  return workingHoursUntil != null &&
+    item.working_hours_until === workingHoursUntil &&
+    !!item.working_hours_manual_position;
 }
 
 export function fitsBeforeOpening(item: OrderableQueueItem, secondsUntilOpening: number): boolean {
@@ -96,7 +98,7 @@ export function fitsBeforeOpening(item: OrderableQueueItem, secondsUntilOpening:
   return seconds > 0 && seconds <= secondsUntilOpening;
 }
 
-/** Keep manual jobs in their temporary slots while automatic jobs fill the gaps. */
+/** Mirror the active Working Hours or after-hours dispatch policy for display. */
 export function sortQueueItems<T extends OrderableQueueItem>(
   items: T[],
   sjfEnabled: boolean,
@@ -106,6 +108,7 @@ export function sortQueueItems<T extends OrderableQueueItem>(
   secondsUntilOpening = Infinity,
 ): T[] {
   if (afterHoursOrder === 'longest_first') {
+    // Keep held jobs visible below the ones the scheduler can start.
     const duration = (item: T) => Math.max(0, item.print_time_seconds ?? 0);
     return [...items].sort((a, b) => {
       const aFits = fitsBeforeOpening(a, secondsUntilOpening);
@@ -117,12 +120,15 @@ export function sortQueueItems<T extends OrderableQueueItem>(
 
   const automaticOrder = [...items].sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));
   if (afterHoursOrder === 'keep') {
+    // Jobs queued after closing have no rank and keep their normal relative order.
     const rank = (item: T) => item.working_hours_kept_position ?? Infinity;
     return automaticOrder.sort((a, b) => rank(a) - rank(b));
   }
   const reserved = (item: T) => hasWorkingHoursManualPosition(item, workingHoursUntil);
   if (!items.some(reserved)) return automaticOrder;
 
+  // Automatic jobs fill the gaps around the manual placements. Jobs added
+  // since the last drag use their normal position to find a slot.
   const slot = (item: T) => item.working_hours_until === workingHoursUntil
     ? item.working_hours_position ?? item.position
     : item.position;

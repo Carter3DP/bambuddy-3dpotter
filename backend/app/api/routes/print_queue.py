@@ -815,6 +815,8 @@ async def list_queue(
     result = await db.execute(query)
     items = result.scalars().all()
     responses = [_enrich_response(item) for item in items]
+    # Attach ranks only to visible pending jobs. The snapshot itself covers
+    # the whole queue and may include jobs outside the caller's printer scope.
     if any(item.status == "pending" for item in items):
         result = await db.execute(
             select(Settings.key, Settings.value).where(
@@ -2770,6 +2772,8 @@ async def reorder_queue(
 ):
     """Bulk update the normal queue or the active Working Hours order."""
     window = data.working_hours_until
+    # A drag started before closing must not be applied to a later window
+    # or fall through to a permanent reorder when the window has ended.
     if window is not None:
         stored = await db.scalar(select(Settings.value).where(Settings.key == "queue_working_hours"))
         deadline = WorkingHours.from_storage(stored).active_until(datetime.now(timezone.utc))
@@ -2784,6 +2788,7 @@ async def reorder_queue(
             if window is None:
                 item.position = reorder_item.position
             else:
+                # Each window starts with a clean set of manual placements.
                 if item.working_hours_until != window:
                     item.working_hours_manual_position = False
                 item.working_hours_position = reorder_item.position
