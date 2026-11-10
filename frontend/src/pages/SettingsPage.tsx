@@ -1276,6 +1276,8 @@ export function SettingsPage() {
 
     const savedHours = baseline.queue_working_hours ?? DEFAULT_WORKING_HOURS;
     const editedHours = localSettings.queue_working_hours ?? DEFAULT_WORKING_HOURS;
+    // Older settings may omit the closing policy. Treat that as the default
+    // so opening the page does not trigger an autosave.
     const workingHoursChanged =
       savedHours.enabled !== editedHours.enabled ||
       savedHours.start !== editedHours.start ||

@@ -176,9 +176,14 @@ export function QueueTimelineView({
       for (const item of items) {
         const scheduled = parseUTCDate(item.scheduled_time);
         const start = scheduled && scheduled.getTime() <= sixMonthsFromNow
-          ? Math.max(chainEnd, scheduled.getTime()) : chainEnd;
+          ? Math.max(chainEnd, scheduled.getTime())
+          : chainEnd;
         const duration = (item.print_time_seconds || 3600) * 1000;
-        if (opening != null && (!(item.print_time_seconds && item.print_time_seconds > 0) || start + duration > opening)) {
+        // The one-hour display fallback is not a valid after-hours estimate.
+        // Skip an oversized job without advancing the lane so a shorter job
+        // can still fit in the time left before opening.
+        const hasEstimate = (item.print_time_seconds ?? 0) > 0;
+        if (opening != null && (!hasEstimate || start + duration > opening)) {
           continue;
         }
         chainEnd = start + duration;

@@ -2211,8 +2211,11 @@ export function QueuePage() {
     return false;
   }, [filterLocation, printers]);
 
+  // Use the server's boundaries and the latest poll time so the estimate
+  // shrinks between settings responses, even when the queue is unchanged.
+  const lastPollAt = Math.max(queueUpdatedAt, settingsUpdatedAt);
   const workingDeadline = parseUTCDate(settings?.queue_working_hours_active_until)?.getTime() ?? 0;
-  const workingSecondsLeft = Math.max(0, (workingDeadline - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000);
+  const workingSecondsLeft = Math.max(0, (workingDeadline - lastPollAt) / 1000);
   const workingHoursActive = workingSecondsLeft > 0;
   const workingHoursUntil = workingHoursActive ? Math.floor(workingDeadline / 1000) : undefined;
   const sjfEnabled = settings?.queue_shortest_first ?? false;
@@ -2224,7 +2227,7 @@ export function QueuePage() {
   const nextOpening = parseUTCDate(settings?.queue_working_hours_next_opening)?.getTime();
   const secondsUntilOpening = nextOpening == null
     ? undefined
-    : (nextOpening - Math.max(queueUpdatedAt, settingsUpdatedAt)) / 1000;
+    : (nextOpening - lastPollAt) / 1000;
   const automaticAfterHours = afterHoursOrder === 'longest_first' ||
     (afterHoursOrder === 'keep' && allPending.some(item => item.working_hours_kept_position != null));
   const showDispatchOrder = sjfEnabled || workingHoursActive || automaticAfterHours;
@@ -2554,9 +2557,13 @@ export function QueuePage() {
       return;
     }
 
+    // Replace only the visible slots in the full dispatch order. A location
+    // filter must not move jobs in another location to the front or back.
     const moved = new Set(movingItems.map(item => item.id));
     const reorderedVisible = reordered.values();
-    const desired = dispatchOrder.map(item => matchesLocationFilter(item) ? reorderedVisible.next().value! : item);
+    const desired = dispatchOrder.map(item =>
+      matchesLocationFilter(item) ? reorderedVisible.next().value! : item,
+    );
     reorderMutation.mutate({
       window: workingHoursUntil,
       items: desired.map((item, index) => ({

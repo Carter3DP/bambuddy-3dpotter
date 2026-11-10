@@ -7,10 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.app.utils.local_time import local_zone
 
+# Persist the last observed order so a scheduler restart after closing can
+# still honour the "keep the queue" setting.
 WORKING_HOURS_SNAPSHOT_KEY = "queue_working_hours_snapshot"
 
 
 class WorkingHours(BaseModel):
+    """A daily window in the server timezone and its after-hours queue policy."""
+
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
@@ -49,9 +53,11 @@ class WorkingHours(BaseModel):
         return None
 
     def after_hours(self, now: datetime) -> bool:
+        """Whether an enabled, nonempty schedule is currently closed."""
         return self.enabled and self.start != self.end and self.active_until(now) is None
 
     def next_opening(self, now: datetime) -> datetime:
+        """Return the next opening in UTC, stepping by local calendar days."""
         zone = local_zone()
         today = now.astimezone(zone).date()
         start = time.fromisoformat(self.start)
@@ -61,6 +67,7 @@ class WorkingHours(BaseModel):
         return opening
 
     def last_closing(self, now: datetime) -> datetime:
+        """Return the most recent closing in UTC."""
         zone = local_zone()
         today = now.astimezone(zone).date()
         end = time.fromisoformat(self.end)
@@ -84,6 +91,7 @@ class WorkingHoursQueueSnapshot(BaseModel):
             snapshot = cls.model_validate_json(raw)
         except ValidationError:
             return {}
+        # Ignore a snapshot from an earlier day or a different closing time.
         if snapshot.window != int(hours.last_closing(now).timestamp()):
             return {}
         return {item_id: index for index, item_id in enumerate(snapshot.ids)}
