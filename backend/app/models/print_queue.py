@@ -70,7 +70,7 @@ class PrintQueueItem(Base):
     been_jumped: Mapped[bool] = mapped_column(Boolean, default=False)  # Starvation guard for SJF
     # Working Hours drags use these fields without changing the normal queue
     # position. The closing timestamp scopes the override to one window.
-    working_hours_manual_position: Mapped[bool] = mapped_column(Boolean, default=False)
+    working_hours_manual_position: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     working_hours_position: Mapped[int | None] = mapped_column(Integer)
     working_hours_until: Mapped[int | None] = mapped_column(BigInteger)
 

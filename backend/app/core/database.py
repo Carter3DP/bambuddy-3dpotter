@@ -6223,6 +6223,7 @@ _PG_COLUMNS_SET_FROM_MODEL = (
     ("print_queue", "nozzle_offset_cali"),
     ("print_queue", "preheat_override"),
     ("print_queue", "skip_filament_check"),
+    ("print_queue", "working_hours_manual_position"),
     ("printers", "camera_light_auto"),
     ("smart_plugs", "auto_off_after_drying"),
     ("smart_plugs", "controls_printer_power"),
