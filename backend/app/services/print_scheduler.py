@@ -11,10 +11,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import delete, false, func, or_, select, true, update
+from sqlalchemy import SQLColumnExpression, case, delete, false, func, or_, select, true, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,6 +33,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
+from backend.app.schemas.working_hours import WORKING_HOURS_SNAPSHOT_KEY, WorkingHours, WorkingHoursQueueSnapshot
 from backend.app.services import drying_preflight, kprofile_drift, print_dispatch_context, stock_forecast
 from backend.app.services.bambu_ftp import (
     FtpFailureKind,
@@ -1658,59 +1659,43 @@ class PrintScheduler:
             # Check if shortest-job-first scheduling is enabled
             sjf_enabled = await self._get_bool_setting(db, "queue_shortest_first")
 
-            # Get all pending items in the one order the queue page shows them
-            # in (#3200). The first eligible item takes a printer, so this order
-            # decides who wins a printer that a pinned job and an "Any <model>"
-            # job both want. It used to start with ``printer_id``, which made the
-            # lane outrank the position: SQLite sorts NULL first, so model-based
-            # jobs always won; PostgreSQL sorts it last, so pinned jobs did.
-            # Neither is what the user dragged into place.
+            # One order across pinned and model-based jobs (#3200). During
+            # working hours, try jobs estimated to fit before closing first.
+            # Keep the configured order within both groups, so a printer that
+            # has no eligible fitting job can still take its normal next job.
+            hours = WorkingHours.from_storage(await self._get_setting(db, "queue_working_hours"))
+            now = datetime.now(timezone.utc)
+            deadline = hours.active_until(now)
+            after_hours = hours.after_hours(now)
+            longest_first = after_hours and hours.end_of_day == "longest_first"
+            next_opening = hours.next_opening(now) if longest_first else None
+            if next_opening is not None:
+                sjf_enabled = False
+            duration = PrintQueueItem.print_time_seconds
+            order: list[SQLColumnExpression[Any]] = []
+            if deadline is not None:
+                seconds_left = (deadline - now).total_seconds()
+                order.append(case(((duration > 0) & (duration <= seconds_left), 0), else_=1))
+            if longest_first:
+                order.append(case((duration > 0, duration)).desc().nullslast())
             if sjf_enabled:
-                # SJF: items already jumped get top priority (starvation guard),
-                # then sort by print_time ascending. Items with no print time go
-                # last, and position breaks ties.
-                result = await db.execute(
-                    select(PrintQueueItem)
-                    .where(PrintQueueItem.status == "pending")
-                    # Never re-select a row a dispatch worker has already claimed
-                    # (#2615) — belt-and-suspenders with the _inflight exclusion
-                    # below, and the guard that lets an orphaned claim be ignored
-                    # until startup reconciliation clears it.
-                    .where(PrintQueueItem.dispatching_at.is_(None))
-                    # archive/library_file are read by the cross-model gate
-                    # (#2578); eager-load once per pass instead of a lazy-load
-                    # (which would raise in async) per item.
-                    .options(
-                        selectinload(PrintQueueItem.archive),
-                        selectinload(PrintQueueItem.library_file),
-                        # Cross-model candidates (#671), plus each candidate's file
-                        # for the same cross-model gate. Lazy-loading either would
-                        # raise in async.
-                        selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
-                    )
-                    .order_by(
-                        PrintQueueItem.been_jumped.desc(),
-                        PrintQueueItem.print_time_seconds.asc().nullslast(),
-                        PrintQueueItem.position,
-                        PrintQueueItem.id,
-                    )
+                # Keep the starvation guard and sort unknown durations last.
+                order.extend((PrintQueueItem.been_jumped.desc(), duration.asc().nullslast()))
+            order.extend((PrintQueueItem.position, PrintQueueItem.id))
+
+            result = await db.execute(
+                select(PrintQueueItem)
+                .where(PrintQueueItem.status == "pending")
+                # Skip rows already claimed by a dispatch worker (#2615).
+                .where(PrintQueueItem.dispatching_at.is_(None))
+                # Eager-load files for the cross-model gate (#2578).
+                .options(
+                    selectinload(PrintQueueItem.archive),
+                    selectinload(PrintQueueItem.library_file),
+                    selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
                 )
-            else:
-                result = await db.execute(
-                    select(PrintQueueItem)
-                    .where(PrintQueueItem.status == "pending")
-                    # Skip rows already claimed by a dispatch worker (#2615).
-                    .where(PrintQueueItem.dispatching_at.is_(None))
-                    .options(
-                        selectinload(PrintQueueItem.archive),
-                        selectinload(PrintQueueItem.library_file),
-                        # Cross-model candidates (#671), plus each candidate's file
-                        # for the same cross-model gate. Lazy-loading either would
-                        # raise in async.
-                        selectinload(PrintQueueItem.variants).selectinload(PrintQueueVariant.library_file),
-                    )
-                    .order_by(PrintQueueItem.position, PrintQueueItem.id)
-                )
+                .order_by(*order)
+            )
             items = list(result.scalars().all())
 
             # Drop rows whose upload is still in flight from an earlier pass
@@ -1720,6 +1705,43 @@ class PrintScheduler:
             if self._inflight:
                 inflight_ids = set(self._inflight)
                 items = [it for it in items if it.id not in inflight_ids]
+
+            if deadline is not None:
+                window = int(deadline.timestamp())
+                reserved = {
+                    item.id
+                    for item in items
+                    if item.working_hours_until == window and item.working_hours_manual_position
+                }
+                if reserved:
+                    # Reserve slots from this window's order. The normal queue
+                    # positions still define the order once the window ends.
+                    slots = sorted(
+                        items,
+                        key=lambda item: (
+                            item.working_hours_position
+                            if item.working_hours_until == window and item.working_hours_position is not None
+                            else item.position,
+                            item.id,
+                        ),
+                    )
+                    automatic = iter(item for item in items if item.id not in reserved)
+                    items = [item if item.id in reserved else next(automatic) for item in slots]
+
+            if hours.end_of_day == "keep" and items:
+                snapshot = await self._get_setting(db, WORKING_HOURS_SNAPSHOT_KEY)
+                if deadline is not None:
+                    saved = WorkingHoursQueueSnapshot(
+                        window=int(deadline.timestamp()), ids=[item.id for item in items]
+                    ).model_dump_json()
+                    if saved != snapshot:
+                        from backend.app.core.db_dialect import upsert_setting
+
+                        await upsert_setting(db, Settings, WORKING_HOURS_SNAPSHOT_KEY, saved)
+                elif ranks := WorkingHoursQueueSnapshot.ranks(snapshot, hours, now):
+                    if any(item.id in ranks for item in items):
+                        items.sort(key=lambda item: ranks.get(item.id, len(ranks)))
+                        sjf_enabled = False
 
             # Read plate-clear setting once per queue check. Default MUST be
             # False to match the schema (SettingsSchema.require_plate_clear
@@ -2076,6 +2098,15 @@ class PrintScheduler:
                         # Waiting on the clock, not on a printer.
                         await hold_item(item, None)
                         skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
+                        continue
+
+                # Preserve staged jobs and their existing hold reasons.
+                if next_opening is not None and (not item.manual_start or item.filament_short):
+                    seconds = item.print_time_seconds
+                    remaining = (next_opening - datetime.now(timezone.utc)).total_seconds()
+                    if seconds is None or not 0 < seconds <= remaining:
+                        await hold_item(item, "Waiting for Working Hours: job cannot fit before opening", notify=False)
+                        skip_reasons["working_hours_opening"] = skip_reasons.get("working_hours_opening", 0) + 1
                         continue
 
                 # Skip items that require manual start, except an "any model"
@@ -2687,7 +2718,12 @@ class PrintScheduler:
             # was, and the next tick tries again.
             try:
                 await self._apply_keep_warm(
-                    db, items, dispatch_ids, busy_printers - backoff_printers, require_plate_clear
+                    db,
+                    items,
+                    dispatch_ids,
+                    busy_printers - backoff_printers,
+                    require_plate_clear,
+                    working_hours=hours,
                 )
             except Exception as e:
                 logger.warning("Keep-warm pass failed, continuing with dispatch: %s", e, exc_info=True)
@@ -7216,8 +7252,8 @@ class PrintScheduler:
         candidate set), and from ``check_queue``'s no-pending-items early
         return (with an empty candidate set) so orphaned holds still get
         released when the queue empties. Also called with an empty candidate
-        set when any of the three gate settings toggles off, so a printer
-        whose feature was disabled mid-hold gets its bed released.
+        set when a gate setting toggles off or working hours end, so an
+        existing hold gets released.
 
         Printers being dispatched this tick are excluded from the bed-off
         publish: ``_preheat_and_soak`` owns the bed from that tick on, so a
@@ -7248,8 +7284,10 @@ class PrintScheduler:
         dispatch_ids: list[int] | set[int],
         busy_printers: set[int],
         require_plate_clear: bool,
+        *,
+        working_hours: WorkingHours,
     ) -> None:
-        """Hold the bed warm on FINISH printers whose next queued item needs chamber heat.
+        """Hold the bed warm when the next item needs chamber heat and the schedule allows.
 
         When a printer just finished a job (FINISH state) and the next queued
         item needs chamber heating, hold the bed hot so the chamber stays warm
@@ -7276,8 +7314,8 @@ class PrintScheduler:
         MQTT: publish is skipped when firmware already has the target.
 
         The release sweep runs BEFORE the engagement gate so a printer that
-        was owned by keep-warm still gets its bed released when any of the
-        three gate settings is toggled off mid-hold. The
+        was owned by keep-warm still gets its bed released when a gate
+        setting toggles off or working hours end mid-hold. The
         ``check_queue`` early-return-when-no-items path also calls
         ``_sweep_keep_warm`` directly to release orphaned holds.
         """
@@ -7288,7 +7326,10 @@ class PrintScheduler:
 
         keep_warm_enabled = await self._get_bool_setting(db, "queue_keep_bed_warm", default=False)
         preheat_on = await self._get_bool_setting(db, "preheat_enabled", default=False)
-        gate_open = keep_warm_enabled and require_plate_clear and preheat_on
+        schedule_allows_hold = (
+            not working_hours.enabled or working_hours.active_until(datetime.now(timezone.utc)) is not None
+        )
+        gate_open = schedule_allows_hold and keep_warm_enabled and require_plate_clear and preheat_on
 
         # Release sweep first — must run even when gate_open is False so a
         # printer owned by keep-warm when a gate toggles off gets released.

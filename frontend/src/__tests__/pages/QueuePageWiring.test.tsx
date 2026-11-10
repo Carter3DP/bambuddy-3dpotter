@@ -6,13 +6,26 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { QueuePage } from '../../pages/QueuePage';
-import { setAuthToken } from '../../api/client';
+import { setAuthToken, type QueueReorderItem } from '../../api/client';
+import type { DragEndEvent } from '@dnd-kit/core';
+
+let queueDragEnd: ((event: DragEndEvent) => void) | undefined;
+vi.mock('@dnd-kit/core', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@dnd-kit/core')>();
+  return {
+    ...original,
+    DndContext: (props: React.ComponentProps<typeof original.DndContext>) => {
+      queueDragEnd = props.onDragEnd;
+      return <original.DndContext {...props} />;
+    },
+  };
+});
 
 const baseItem = {
   id: 1,
@@ -471,6 +484,64 @@ describe('QueuePage wiring: permission gates', () => {
     render(<QueuePage />);
     await screen.findByText('Pending B');
     await waitFor(() => expect(screen.getAllByTitle('Move Down')).toHaveLength(2));
+  });
+
+  it('restores the normal queue after a temporary Working Hours drag', async () => {
+    signInWith(['queue:read', 'queue:reorder']);
+    const items = [{ ...pendingA, print_time_seconds: 7200 }, pendingB, { ...pendingC, print_time_seconds: 7200 }];
+    useQueue(items);
+    const window = Math.floor(Date.now() / 1000) + 5400;
+    const deadline = new Date(window * 1000).toISOString();
+    let workingHoursActive = true;
+    server.use(
+      http.get('*/api/v1/settings/ui-flags', () => HttpResponse.json({
+        queue_working_hours: { enabled: true, start: '08:30', end: '16:30' },
+        queue_working_hours_active_until: workingHoursActive ? deadline : null,
+      })),
+      http.post('*/api/v1/queue/reorder', async ({ request }) => {
+        await capture(request);
+        const { items: updates, working_hours_until } = calls.at(-1)?.body as {
+          items: QueueReorderItem[];
+          working_hours_until: number;
+        };
+        for (const update of updates) {
+          Object.assign(items.find(item => item.id === update.id)!, {
+            working_hours_until,
+            working_hours_position: update.position,
+            working_hours_manual_position: update.working_hours_manual_position ?? false,
+          });
+        }
+        return HttpResponse.json({ message: 'ok' });
+      }),
+    );
+
+    const view = render(<QueuePage />);
+    expect(await screen.findAllByText('Moved by Working Hours')).toHaveLength(2);
+    expect(screen.getByText('Pending B').parentElement).toHaveTextContent('Moved by Working Hours');
+    expect(screen.getByText('Pending C').parentElement).not.toHaveTextContent('Moved by Working Hours');
+
+    // Drop the third job ahead of the job promoted by Working Hours.
+    act(() => queueDragEnd?.({
+      active: { id: pendingC.id },
+      over: { id: pendingB.id },
+    } as DragEndEvent));
+    const manualPosition = await screen.findByRole('button', { name: 'Manual position' });
+    expect(screen.getByText('Pending C').parentElement).toContainElement(manualPosition);
+    expect(mutationCalls().at(-1)?.body).toEqual({
+      working_hours_until: window,
+      items: [
+        { id: pendingC.id, position: 1, working_hours_manual_position: true },
+        { id: pendingB.id, position: 2 },
+        { id: pendingA.id, position: 3 },
+      ],
+    });
+
+    workingHoursActive = false;
+    view.unmount();
+    render(<QueuePage />);
+    await screen.findByText('Pending C');
+    expect(screen.getAllByText(/^Pending [ABC]$/).map(el => el.textContent)).toEqual(['Pending A', 'Pending B', 'Pending C']);
+    expect(screen.queryByText('Manual position')).toBeNull();
   });
 
   it('Resume-after-failure banner is hidden without queue:update_all', async () => {

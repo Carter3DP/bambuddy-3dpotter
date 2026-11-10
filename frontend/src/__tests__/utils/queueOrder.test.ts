@@ -7,13 +7,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { compareQueueOrder, queueLaneKey } from '../../utils/queueOrder';
+import { compareQueueOrder, queueLaneKey, sortQueueItems } from '../../utils/queueOrder';
 
 interface Item {
   id: number;
   printer_id?: number | null;
   target_model?: string | null;
   been_jumped?: boolean;
+  working_hours_kept_position?: number;
   print_time_seconds?: number | null;
   position: number;
 }
@@ -26,8 +27,8 @@ const item = (id: number, over: Partial<Item> = {}): Item => ({
   ...over,
 });
 
-const idsInOrder = (items: Item[], sjf: boolean) =>
-  [...items].sort((a, b) => compareQueueOrder(a, b, sjf)).map(i => i.id);
+const idsInOrder = (items: Item[], sjf: boolean, workingSecondsLeft?: number) =>
+  [...items].sort((a, b) => compareQueueOrder(a, b, sjf, workingSecondsLeft)).map(i => i.id);
 
 describe('compareQueueOrder', () => {
   it('leaves the queue in position order when SJF is off', () => {
@@ -67,6 +68,18 @@ describe('compareQueueOrder', () => {
       item(2, { position: 2, print_time_seconds: 300 }),
     ];
     expect(idsInOrder(items, true)).toEqual([1, 2]);
+  });
+
+  it('prioritizes jobs that fit, preserving the configured order within each group', () => {
+    const items = [
+      item(1, { print_time_seconds: 8000, been_jumped: true }),
+      item(2, { print_time_seconds: null }),
+      item(3, { print_time_seconds: 3600 }),
+      item(4, { print_time_seconds: 1800 }),
+    ];
+    expect(idsInOrder(items, false, 3600)).toEqual([3, 4, 1, 2]);
+    expect(idsInOrder(items, true, 3600)).toEqual([4, 3, 1, 2]);
+    expect(idsInOrder(items, false, 0)).toEqual([1, 2, 3, 4]);
   });
 
   it('falls back to position when two prints are the same length', () => {
@@ -128,5 +141,27 @@ describe('compareQueueOrder across printers and models (#3200)', () => {
       item(5, { printer_id: 1, position: 1 }),
     ];
     expect(idsInOrder(items, false)).toEqual([5, 7]);
+  });
+});
+
+
+describe('after-hours queue order', () => {
+  const items = [
+    item(1, { print_time_seconds: 3600 }),
+    item(2, { print_time_seconds: null }),
+    item(3, { print_time_seconds: 7200, working_hours_kept_position: 0 }),
+    item(4, { print_time_seconds: 1800, working_hours_kept_position: 1 }),
+  ];
+
+  it('keeps jobs from the last working order ahead of newly queued jobs', () => {
+    expect(sortQueueItems(items, false, 0, undefined, 'keep').map(row => row.id)).toEqual([3, 4, 1, 2]);
+  });
+
+  it('sorts longest first, with unknown times last, regardless of SJF', () => {
+    expect(sortQueueItems(items, true, 0, undefined, 'longest_first', 3600).map(row => row.id)).toEqual([1, 4, 3, 2]);
+  });
+
+  it('restores the normal ordering independently of the saved working order', () => {
+    expect(sortQueueItems(items, false, 0, undefined, 'restore').map(row => row.id)).toEqual([1, 2, 3, 4]);
   });
 });

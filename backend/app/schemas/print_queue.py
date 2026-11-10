@@ -303,6 +303,10 @@ class PrintQueueItemResponse(BaseModel):
 
     # Shortest-job-first scheduling
     been_jumped: bool = False
+    working_hours_manual_position: bool = False
+    working_hours_position: int | None = None
+    working_hours_until: int | None = None
+    working_hours_kept_position: int | None = None
 
     # Auto-print G-code injection
     gcode_injection: bool = False
@@ -347,10 +351,12 @@ class PrintQueueHistoryClearResponse(BaseModel):
 class PrintQueueReorderItem(BaseModel):
     id: int
     position: int
+    working_hours_manual_position: bool | None = None
 
 
 class PrintQueueReorder(BaseModel):
     items: list[PrintQueueReorderItem]
+    working_hours_until: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _validate_positions_unique(self) -> "PrintQueueReorder":

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -68,6 +68,10 @@ class PrintQueueItem(Base):
     # Shortest-job-first scheduling
     print_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Cached from archive/library
     been_jumped: Mapped[bool] = mapped_column(Boolean, default=False)  # Starvation guard for SJF
+    # A temporary ordering layer; the normal queue position is kept intact.
+    working_hours_manual_position: Mapped[bool] = mapped_column(Boolean, default=False)
+    working_hours_position: Mapped[int | None] = mapped_column(Integer)
+    working_hours_until: Mapped[int | None] = mapped_column(BigInteger)
 
     # Auto-print G-code injection (#422)
     gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False)

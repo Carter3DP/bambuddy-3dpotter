@@ -43,6 +43,28 @@ class TestSettingsAPI:
         assert isinstance(result["auto_archive"], bool)
         assert isinstance(result["currency"], str)
 
+    @pytest.mark.integration
+    async def test_working_hours_round_trip(self, async_client: AsyncClient):
+        route = "/api/v1/settings/"
+        defaults = (await async_client.get(route)).json()
+        assert defaults["queue_working_hours"] == {
+            "enabled": False,
+            "start": "08:30",
+            "end": "16:30",
+            "end_of_day": "restore",
+        }
+        assert defaults["queue_working_hours_active_until"] is None
+
+        hours = {"enabled": True, "start": "22:00", "end": "06:30", "end_of_day": "longest_first"}
+        response = await async_client.put(route, json={"queue_working_hours": hours})
+        assert response.status_code == 200
+        assert response.json()["queue_working_hours"] == hours
+
+        response = await async_client.patch(route, json={"queue_working_hours": {**hours, "start": "24:00"}})
+        assert response.status_code == 422
+        assert (await async_client.get(route)).json()["queue_working_hours"] == hours
+        assert (await async_client.get(route + "ui-flags")).json()["queue_working_hours"] == hours
+
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_unset_temp_alarm_reads_back_as_null(self, async_client: AsyncClient, db_session):

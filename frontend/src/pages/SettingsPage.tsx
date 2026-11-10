@@ -1,5 +1,5 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Pencil, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud, MonitorPlay, Info } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, Clock, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Pencil, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud, MonitorPlay, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -97,6 +97,7 @@ registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback
 registerSettingsSearch({ labelKey: 'settings.tempFanPresetsTitle', labelFallback: 'Temperature & Fan Presets', tab: 'queue', keywords: 'temperature fan presets nozzle bed chamber quick buttons popover', anchor: 'card-temp-fan-presets' });
 registerSettingsSearch({ labelKey: 'settings.staggeredStart', labelFallback: 'Staggered Start', tab: 'queue', keywords: 'staggered batch delay start queue group', anchor: 'card-staggered' });
 registerSettingsSearch({ labelKey: 'settings.plateClear', labelFallback: 'Plate-Clear Confirmation', tab: 'queue', keywords: 'plate clear confirm auto queue', anchor: 'card-plate' });
+registerSettingsSearch({ labelKey: 'settings.workingHoursTitle', labelFallback: 'Working Hours', tab: 'queue', keywords: 'working hours shift cutoff shortest print schedule dispatch queue farm', anchor: 'card-working-hours' });
 registerSettingsSearch({ labelKey: 'settings.concurrentUploadsTitle', labelFallback: 'Concurrent Uploads', tab: 'queue', keywords: 'concurrent parallel upload transfer ftp queue slow farm simultaneous', anchor: 'card-concurrent-uploads' });
 registerSettingsSearch({ labelKey: 'settings.gcodeInjection', labelFallback: 'G-code Injection', tab: 'queue', keywords: 'gcode injection start end autoprint farmloop swapmod autoclear printflow', anchor: 'card-gcode' });
 registerSettingsSearch({ labelKey: 'settings.slicerCard', labelFallback: 'Slicer', tab: 'queue', keywords: 'slicer orcaslicer bambustudio orca bambu api sidecar url docker preferred', anchor: 'card-slicer' });
@@ -256,6 +257,8 @@ function SecretHint({ name, value, reenter }: { name: string; value: unknown; re
 function clampPauseWarningMinutes(minutes: number | undefined): number {
   return Math.min(120, Math.max(1, Math.round(minutes || 5)));
 }
+
+const DEFAULT_WORKING_HOURS = { enabled: false, start: '08:30', end: '16:30', end_of_day: 'restore' } as const;
 
 export function SettingsPage() {
   const [cameraTokenRevision, setCameraTokenRevision] = useState(0);
@@ -1271,6 +1274,14 @@ export function SettingsPage() {
       return;
     }
 
+    const savedHours = baseline.queue_working_hours ?? DEFAULT_WORKING_HOURS;
+    const editedHours = localSettings.queue_working_hours ?? DEFAULT_WORKING_HOURS;
+    const workingHoursChanged =
+      savedHours.enabled !== editedHours.enabled ||
+      savedHours.start !== editedHours.start ||
+      savedHours.end !== editedHours.end ||
+      (savedHours.end_of_day ?? 'restore') !== (editedHours.end_of_day ?? 'restore');
+
     // Check if there are actual changes
     const hasChanges =
       baseline.auto_archive !== localSettings.auto_archive ||
@@ -1353,6 +1364,7 @@ export function SettingsPage() {
       (baseline.stagger_group_size ?? 2) !== (localSettings.stagger_group_size ?? 2) ||
       (baseline.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
       (baseline.require_plate_clear ?? false) !== (localSettings.require_plate_clear ?? false) ||
+      workingHoursChanged ||
       (baseline.queue_max_concurrent_uploads ?? 4) !== (localSettings.queue_max_concurrent_uploads ?? 4) ||
       (baseline.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
       (baseline.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
@@ -1482,6 +1494,7 @@ export function SettingsPage() {
         stagger_group_size: localSettings.stagger_group_size,
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         require_plate_clear: localSettings.require_plate_clear,
+        queue_working_hours: workingHoursChanged ? editedHours : undefined,
         queue_max_concurrent_uploads: localSettings.queue_max_concurrent_uploads,
         preheat_enabled: localSettings.preheat_enabled,
         preheat_filament_targets: localSettings.preheat_filament_targets,
@@ -1510,6 +1523,8 @@ export function SettingsPage() {
       }
     };
   }, [localSettings, settings, updateMutation, authEnabled, hasPermission, showToast, t]);
+
+  const workingHours = localSettings?.queue_working_hours ?? DEFAULT_WORKING_HOURS;
 
   const secretsPendingReentry =
     settings && localSettings ? secretsToReenter(settings, localSettings, settingsSecretDestinations(settings)) : [];
@@ -5467,6 +5482,87 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          <Card id="card-working-hours">
+            <CardHeader>
+              <h3 id="working-hours-title" className="text-base font-semibold text-white flex items-center gap-2">
+                <Clock className="w-4 h-4 text-bambu-green" />
+                {t('settings.workingHoursTitle', 'Working Hours')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <p id="working-hours-description" className="text-xs text-bambu-gray">
+                  {t('settings.workingHoursDescription', 'Prioritize jobs estimated to finish by closing time. When no eligible job fits during this window, dispatch follows the normal queue order. Times use the Bambuddy server timezone (TZ).')}
+                </p>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    aria-labelledby="working-hours-title"
+                    aria-describedby="working-hours-description"
+                    checked={workingHours.enabled}
+                    onChange={(e) => updateSetting('queue_working_hours', { ...workingHours, enabled: e.target.checked })}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary rounded-full peer-focus-visible:ring-2 peer-focus-visible:ring-bambu-green peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {workingHours.enabled && (
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    ['start', 'settings.workingHoursStart', 'Start time'],
+                    ['end', 'settings.workingHoursEnd', 'End time'],
+                  ] as const).map(([field, label, fallback]) => (
+                    <label key={field} className="block text-xs text-bambu-gray">
+                      {t(label, fallback)}
+                      <input
+                        type="time"
+                        value={workingHours[field]}
+                        onChange={(e) => {
+                          if (e.target.value) {
+                            updateSetting('queue_working_hours', { ...workingHours, [field]: e.target.value });
+                          }
+                        }}
+                        className="mt-1 w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                      />
+                    </label>
+                  ))}
+                  <label className="col-span-2 flex items-center gap-2 text-xs text-bambu-gray">
+                    <input
+                      type="checkbox"
+                      checked={workingHours.end_of_day !== 'keep'}
+                      onChange={(e) => updateSetting('queue_working_hours', {
+                        ...workingHours,
+                        end_of_day: e.target.checked ? 'restore' : 'keep',
+                      })}
+                      className="accent-bambu-green"
+                    />
+                    {t('settings.workingHoursEndOfDay', 'Change the queue at the end of the working day')}
+                  </label>
+                  {workingHours.end_of_day === 'keep' ? (
+                    <p className="col-span-2 text-xs text-bambu-gray">
+                      {t('settings.workingHoursKeepQueueHelp', 'Keep the last working-hours order for pending jobs until the next working window.')}
+                    </p>
+                  ) : (
+                    <label className="col-span-2 block text-xs text-bambu-gray">
+                      {t('settings.workingHoursAfterHoursOrder', 'After-hours queue order')}
+                      <select
+                        value={workingHours.end_of_day ?? 'restore'}
+                        onChange={(e) => updateSetting('queue_working_hours', {
+                          ...workingHours,
+                          end_of_day: e.target.value === 'longest_first' ? 'longest_first' : 'restore',
+                        })}
+                        className="mt-1 w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                      >
+                        <option value="restore">{t('settings.workingHoursRestoreQueue', 'Restore the queue')}</option>
+                        <option value="longest_first">{t('settings.workingHoursLongestJobFirst', 'Longest job that fits before opening')}</option>
+                      </select>
+                    </label>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Concurrent queue uploads (#2555) */}
           <Card id="card-concurrent-uploads">
             <CardHeader>
@@ -5573,6 +5669,9 @@ export function SettingsPage() {
                   </p>
                   <p className="text-xs text-bambu-gray mt-0.5">
                     {t('settings.keepBedWarmDesc', 'While awaiting plate-clear, hold the bed at the keep-warm temperature below so the chamber stays hot — or at the next print\'s own bed temperature when that is higher. Only applies when the next print needs chamber heating (ASA, ABS, PA, PC etc.). Requires plate-clear confirmation to be enabled.')}
+                  </p>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.keepBedWarmWorkingHours', 'When Working Hours is enabled, the bed is kept warm only during that window. With Working Hours off, this setting can keep the bed warm at any time.')}
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">

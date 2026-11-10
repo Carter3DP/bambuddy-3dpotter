@@ -272,6 +272,7 @@ Optional but recommended — drop the [`slicer-api/` Compose stack](slicer-api/R
 - **H2C rack nozzle per filament** — choose which rack nozzle prints each filament
 - **H3C with AMS 3H** — the nine-slot AMS 3H on one card laid out like the unit, its two-slot dryer, the nine-PrintTool rack and the per-PrintTool external inputs (Ext-1 to Ext-9); each slot feeds its own PrintTool, numbered as in Bambu Studio for prints, queue jobs, inventory and Spoolman
 - Shortest Job First scheduling (SJF toggle on queue page — scheduler picks shorter prints first, with starvation guard)
+- **Working Hours** (Settings → Workflow → Queue & Dispatch) gives jobs estimated to finish by closing time first choice of available printers. Set a daily start and end in the server timezone (`TZ`). An end earlier than the start closes the following day. When no eligible job fits, the normal queue order applies. At closing, choose to keep the last working-hours order, restore the normal order, or prioritize the longest estimated print that can finish before the next working window. If no job fits, the queue waits for opening.
 - Queue Only mode (stage without auto-start)
 - Clear plate confirmation between queued prints (can be disabled in settings for farm workflows)
 - Auto-print G-code injection (per-model start/end snippets for Farmloop, SwapMod, AutoClear, Printflow 3D — toggle per queue item)

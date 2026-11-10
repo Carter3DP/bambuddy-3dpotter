@@ -1,11 +1,13 @@
 import json
 import re
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, computed_field, field_validator
 
 from backend.app.schemas.print_queue import TriState
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.utils.printer_models import MAX_CHAMBER_TEMP_C
 
 # Outbound service URLs validated on save, so a bad value is rejected at
@@ -491,6 +493,7 @@ class AppSettings(BaseModel):
         default=False,
         description="Shortest Job First — scheduler prioritizes shorter print jobs over longer ones",
     )
+    queue_working_hours: WorkingHours = Field(default_factory=lambda: WorkingHours.from_storage(None))
     queue_max_concurrent_uploads: int = Field(
         default=4,
         ge=1,
@@ -541,12 +544,13 @@ class AppSettings(BaseModel):
     queue_keep_bed_warm: bool = Field(
         default=False,
         description=(
-            "While a printer is in FINISH state awaiting plate-clear and the next queued item requires "
+            "While a printer awaits plate-clear in FINISH and the next queued item requires "
             "chamber heating, hold the bed hot so the chamber stays warm during the bed-clearing "
             "window. The bed is the chamber's heating element here: the hold target is "
             "queue_keep_warm_bed_temp, or the item's own bed_temperature when the slicer metadata "
             "reports a higher one. Only fires for filaments with a non-zero chamber target "
-            "(ASA, ABS, PA, PC etc.); PLA/PETG prints are skipped automatically."
+            "(ASA, ABS, PA, PC etc.); PLA/PETG prints are skipped automatically. When Working Hours is enabled, "
+            "the hold is limited to that window."
         ),
     )
     queue_keep_warm_bed_temp: int = Field(
@@ -727,6 +731,20 @@ class AppSettings(BaseModel):
         description="JSON object with 'order' key containing array of sidebar item IDs (empty = no default)",
     )
 
+    @computed_field
+    @property
+    def queue_working_hours_active_until(self) -> datetime | None:
+        return self.queue_working_hours.active_until(datetime.now(timezone.utc))
+
+    @computed_field
+    @property
+    def queue_working_hours_next_opening(self) -> datetime | None:
+        now = datetime.now(timezone.utc)
+        hours = self.queue_working_hours
+        if hours.end_of_day == "longest_first" and hours.after_hours(now):
+            return hours.next_opening(now)
+        return None
+
     # The settings page sends every field back on each save, and the update
     # schema accepts only these values. A stored value outside them would make
     # every later save fail, so it is read back as what the service treats it as.
@@ -854,6 +872,7 @@ class AppSettingsUpdate(BaseModel):
     finance_budget_reset_timezone: str | None = None
     require_plate_clear: bool | None = None
     queue_shortest_first: bool | None = None
+    queue_working_hours: WorkingHours | None = None
     queue_max_concurrent_uploads: int | None = Field(default=None, ge=1, le=16)
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None

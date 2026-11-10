@@ -1,9 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, Clock, Layers, Printer as PrinterIcon } from 'lucide-react';
 import { formatDuration, parseUTCDate } from '../utils/date';
-import { compareQueueOrder, queueLaneKey } from '../utils/queueOrder';
+import { sortQueueItems, queueLaneKey } from '../utils/queueOrder';
 import { isBusyOnlyWaitingReason } from '../utils/waitingReason';
-import type { PrintQueueItem, Printer } from '../api/client';
+import type { PrintQueueItem, Printer, WorkingHoursEndOfDay } from '../api/client';
 import { queueItemThumbnailUrl } from '../utils/queueItemThumbnail';
 import { Button } from './Button';
 
@@ -38,6 +38,10 @@ interface QueueTimelineViewProps {
    *  order depends on it, so without it the timeline drew a queue the
    *  scheduler had no intention of running (#3043). */
   sjfEnabled: boolean;
+  workingSecondsLeft?: number;
+  workingHoursUntil?: number;
+  afterHoursOrder?: WorkingHoursEndOfDay;
+  nextWorkingHoursOpening?: number;
   onItemClick: (item: PrintQueueItem) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }
@@ -64,6 +68,10 @@ export function QueueTimelineView({
   printers,
   printerStatuses,
   sjfEnabled,
+  workingSecondsLeft,
+  workingHoursUntil,
+  afterHoursOrder,
+  nextWorkingHoursOpening,
   onItemClick,
   t,
 }: QueueTimelineViewProps) {
@@ -107,7 +115,16 @@ export function QueueTimelineView({
     // Chain-end timestamp per lane (where the next pending item's bar starts).
     const chainEndByLane = new Map<string, number>();
 
-    for (const item of queueItems) {
+    const opening = afterHoursOrder === 'longest_first' ? nextWorkingHoursOpening : undefined;
+    const pendingOrder = sortQueueItems(
+      queueItems.filter(item => item.status === 'pending'),
+      sjfEnabled,
+      workingSecondsLeft ?? 0,
+      workingHoursUntil,
+      afterHoursOrder,
+      opening == null ? undefined : (opening - nowMs) / 1000,
+    );
+    for (const item of [...queueItems.filter(item => item.status !== 'pending'), ...pendingOrder]) {
       if (item.status === 'printing') {
         const status = item.printer_id != null ? printerStatuses[item.printer_id] : undefined;
         const start = parseUTCDate(item.started_at) || new Date();
@@ -146,7 +163,6 @@ export function QueueTimelineView({
 
     const sixMonthsFromNow = Date.now() + 180 * 24 * HOUR_MS;
     for (const [lk, items] of pendingByLaneKey) {
-      items.sort((a, b) => compareQueueOrder(a, b, sjfEnabled));
       const hasActive = lanesWithActive.has(lk);
       // A lane is timelineable when EITHER it has an active print (chain
       // forecast off its end) OR its first pending item is scheduled (a
@@ -159,21 +175,23 @@ export function QueueTimelineView({
       let chainEnd = chainEndByLane.get(lk) ?? nowMs;
       for (const item of items) {
         const scheduled = parseUTCDate(item.scheduled_time);
-        if (scheduled && scheduled.getTime() <= sixMonthsFromNow) {
-          chainEnd = Math.max(chainEnd, scheduled.getTime());
-        }
+        const start = scheduled && scheduled.getTime() <= sixMonthsFromNow
+          ? Math.max(chainEnd, scheduled.getTime()) : chainEnd;
         const duration = (item.print_time_seconds || 3600) * 1000;
+        if (opening != null && (!(item.print_time_seconds && item.print_time_seconds > 0) || start + duration > opening)) {
+          continue;
+        }
+        chainEnd = start + duration;
         result.push({
           item,
-          estimatedStart: new Date(chainEnd),
-          estimatedEnd: new Date(chainEnd + duration),
+          estimatedStart: new Date(start),
+          estimatedEnd: new Date(chainEnd),
           type: 'queued',
         });
-        chainEnd += duration;
       }
     }
     return result;
-  }, [queueItems, printerStatuses, nowMs, sjfEnabled]);
+  }, [queueItems, printerStatuses, nowMs, sjfEnabled, workingSecondsLeft, workingHoursUntil, afterHoursOrder, nextWorkingHoursOpening]);
 
   // Lanes: every printer + every distinct target_model with queue activity
   // + an "unassigned" lane if needed. Printers that have NO events queued

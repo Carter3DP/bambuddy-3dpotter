@@ -13,6 +13,7 @@ These run on SQLite, where the "Any" jobs used to win.
 """
 
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
+from backend.app.schemas.working_hours import WorkingHours
 from backend.app.services.print_scheduler import PrintScheduler
 
 
@@ -57,7 +59,18 @@ async def ctx():
         await engine.dispose()
 
 
-async def _add(ctx, *, position, printer_id=None, target_model=None, print_time=None, manual_start=False):
+async def _add(
+    ctx,
+    *,
+    position,
+    printer_id=None,
+    target_model=None,
+    print_time=None,
+    manual_start=False,
+    working_hours_manual=False,
+    working_hours_position=None,
+    working_hours_until=None,
+):
     async with ctx.session_maker() as db:
         lib = LibraryFile(
             filename="job.gcode.3mf",
@@ -76,6 +89,9 @@ async def _add(ctx, *, position, printer_id=None, target_model=None, print_time=
             library_file_id=lib.id,
             print_time_seconds=print_time,
             manual_start=manual_start,
+            working_hours_manual_position=working_hours_manual,
+            working_hours_position=working_hours_position,
+            working_hours_until=working_hours_until,
         )
         db.add(item)
         await db.commit()
@@ -101,7 +117,7 @@ async def _item(ctx, item_id):
         return (await db.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))).scalar_one()
 
 
-async def _run(ctx, *, idle_printers):
+async def _run(ctx, *, idle_printers, now=None):
     """One check_queue pass; returns {item_id: printer_id} for what went out."""
     scheduler = PrintScheduler()
     launched = MagicMock()
@@ -138,6 +154,9 @@ async def _run(ctx, *, idle_printers):
         patch.object(scheduler, "_launch_uploads", launched),
     ]
     with ExitStack() as stack:
+        if now is not None:
+            clock = stack.enter_context(patch("backend.app.services.print_scheduler.datetime", wraps=datetime))
+            clock.now.return_value = now
         for p in patches:
             stack.enter_context(p)
         await scheduler.check_queue()
@@ -249,3 +268,81 @@ class TestShortestJobFirstAcrossLanes:
 
         await _run(ctx, idle_printers={1})
         assert (await _item(ctx, other_model)).been_jumped is False
+
+
+@pytest.mark.parametrize(
+    ("hour", "later_time", "manual_start", "expected_position"),
+    [
+        (8, 5 * 3600, False, 1),  # before opening
+        (9, 5 * 3600, False, 2),  # fits before closing
+        (9, 8 * 3600, False, 1),  # neither job fits
+        (9, 5 * 3600, True, 1),  # fitting job is staged
+        (9, None, False, 1),  # unknown duration
+        (9, 0, False, 1),  # zero is not a usable estimate
+        (17, 5 * 3600, False, 1),  # after closing
+    ],
+)
+async def test_working_hours_dispatch(ctx, monkeypatch, hour, later_time, manual_start, expected_position):
+    monkeypatch.setenv("TZ", "UTC")
+    await _set(ctx, "queue_working_hours", '{"enabled":true,"start":"08:30","end":"16:30"}')
+    first = await _pinned(ctx, 1, print_time=16 * 3600)
+    second = await _any(ctx, 2, print_time=later_time, manual_start=manual_start)
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+
+    expected = first if expected_position == 1 else second
+    assert await _run(ctx, idle_printers={1}, now=now) == {expected: 1}
+
+
+@pytest.mark.parametrize(
+    ("manual_position", "hour", "expected"), [(1, 9, "manual"), (2, 9, "fitting"), (1, 17, "first")]
+)
+async def test_working_hours_manual_order_preserves_normal_positions(ctx, monkeypatch, manual_position, hour, expected):
+    monkeypatch.setenv("TZ", "UTC")
+    await _set(ctx, "queue_working_hours", '{"enabled":true,"start":"08:30","end":"16:30"}')
+    window = int(datetime(2026, 11, 9, 16, 30, tzinfo=timezone.utc).timestamp())
+    first = await _any(ctx, 1, print_time=9 * 3600, working_hours_position=3, working_hours_until=window)
+    fitting = await _any(
+        ctx, 2, print_time=5 * 3600, working_hours_position=3 - manual_position, working_hours_until=window
+    )
+    manual = await _pinned(
+        ctx,
+        3,
+        print_time=16 * 3600,
+        working_hours_manual=True,
+        working_hours_position=manual_position,
+        working_hours_until=window,
+    )
+
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+    ids = {"first": first, "fitting": fitting, "manual": manual}
+    assert await _run(ctx, idle_printers={1}, now=now) == {ids[expected]: 1}
+
+
+@pytest.mark.parametrize(
+    ("enabled", "hour", "expected"), [(True, 17, "medium"), (True, 8, None), (True, 9, "short"), (False, 17, "short")]
+)
+async def test_longest_job_first_only_applies_after_working_hours(ctx, monkeypatch, enabled, hour, expected):
+    monkeypatch.setenv("TZ", "UTC")
+    hours = WorkingHours(enabled=enabled, start="08:30", end="16:30", end_of_day="longest_first")
+    await _set(ctx, "queue_working_hours", hours.model_dump_json())
+    await _set(ctx, "queue_shortest_first", "true")
+    await _pinned(ctx, 1, print_time=None)
+    short = await _pinned(ctx, 2, print_time=3600)
+    await _any(ctx, 3, print_time=16 * 3600)
+    medium = await _any(ctx, 4, print_time=12 * 3600)
+
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+    dispatched = {"short": {short: 1}, "medium": {medium: 1}, None: {}}
+    assert await _run(ctx, idle_printers={1}, now=now) == dispatched[expected]
+
+
+async def test_keep_order_survives_scheduler_restart_and_expires_next_window(ctx, monkeypatch):
+    monkeypatch.setenv("TZ", "UTC")
+    hours = WorkingHours(enabled=True, start="08:30", end="16:30", end_of_day="keep")
+    await _set(ctx, "queue_working_hours", hours.model_dump_json())
+    long = await _pinned(ctx, 1, print_time=16 * 3600)
+    short = await _any(ctx, 2, print_time=5 * 3600)
+
+    assert await _run(ctx, idle_printers=set(), now=datetime(2026, 11, 9, 9, tzinfo=timezone.utc)) == {}
+    assert await _run(ctx, idle_printers={1}, now=datetime(2026, 11, 9, 17, tzinfo=timezone.utc)) == {short: 1}
+    assert await _run(ctx, idle_printers={1}, now=datetime(2026, 11, 10, 17, tzinfo=timezone.utc)) == {long: 1}
