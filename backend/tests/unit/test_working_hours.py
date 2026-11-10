@@ -28,3 +28,18 @@ def test_window_uses_real_elapsed_time_across_dst(monkeypatch):
 
 def test_corrupt_storage_disables_priority():
     assert not WorkingHours.from_storage('{"enabled": true, "start": "99:00", "end": "16:30"}').enabled
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "hour", "next_day", "next_hour"),
+    [
+        ("08:30", "16:30", 17, 10, 8),
+        ("22:00", "06:00", 7, 9, 22),
+    ],
+)
+def test_next_opening_in_server_timezone(monkeypatch, start, end, hour, next_day, next_hour):
+    monkeypatch.setenv("TZ", "UTC")
+    hours = WorkingHours(enabled=True, start=start, end=end)
+    now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
+    minute = int(start.split(":")[1])
+    assert hours.next_opening(now) == datetime(2026, 11, next_day, next_hour, minute, tzinfo=timezone.utc)

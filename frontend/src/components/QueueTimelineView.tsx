@@ -41,6 +41,7 @@ interface QueueTimelineViewProps {
   workingSecondsLeft?: number;
   workingHoursUntil?: number;
   afterHoursOrder?: WorkingHoursEndOfDay;
+  nextWorkingHoursOpening?: number;
   onItemClick: (item: PrintQueueItem) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }
@@ -70,6 +71,7 @@ export function QueueTimelineView({
   workingSecondsLeft,
   workingHoursUntil,
   afterHoursOrder,
+  nextWorkingHoursOpening,
   onItemClick,
   t,
 }: QueueTimelineViewProps) {
@@ -113,7 +115,15 @@ export function QueueTimelineView({
     // Chain-end timestamp per lane (where the next pending item's bar starts).
     const chainEndByLane = new Map<string, number>();
 
-    const pendingOrder = sortQueueItems(queueItems.filter(item => item.status === 'pending'), sjfEnabled, workingSecondsLeft ?? 0, workingHoursUntil, afterHoursOrder);
+    const opening = afterHoursOrder === 'longest_first' ? nextWorkingHoursOpening : undefined;
+    const pendingOrder = sortQueueItems(
+      queueItems.filter(item => item.status === 'pending'),
+      sjfEnabled,
+      workingSecondsLeft ?? 0,
+      workingHoursUntil,
+      afterHoursOrder,
+      opening == null ? undefined : (opening - nowMs) / 1000,
+    );
     for (const item of [...queueItems.filter(item => item.status !== 'pending'), ...pendingOrder]) {
       if (item.status === 'printing') {
         const status = item.printer_id != null ? printerStatuses[item.printer_id] : undefined;
@@ -165,21 +175,23 @@ export function QueueTimelineView({
       let chainEnd = chainEndByLane.get(lk) ?? nowMs;
       for (const item of items) {
         const scheduled = parseUTCDate(item.scheduled_time);
-        if (scheduled && scheduled.getTime() <= sixMonthsFromNow) {
-          chainEnd = Math.max(chainEnd, scheduled.getTime());
-        }
+        const start = scheduled && scheduled.getTime() <= sixMonthsFromNow
+          ? Math.max(chainEnd, scheduled.getTime()) : chainEnd;
         const duration = (item.print_time_seconds || 3600) * 1000;
+        if (opening != null && (!(item.print_time_seconds && item.print_time_seconds > 0) || start + duration > opening)) {
+          continue;
+        }
+        chainEnd = start + duration;
         result.push({
           item,
-          estimatedStart: new Date(chainEnd),
-          estimatedEnd: new Date(chainEnd + duration),
+          estimatedStart: new Date(start),
+          estimatedEnd: new Date(chainEnd),
           type: 'queued',
         });
-        chainEnd += duration;
       }
     }
     return result;
-  }, [queueItems, printerStatuses, nowMs, sjfEnabled, workingSecondsLeft, workingHoursUntil, afterHoursOrder]);
+  }, [queueItems, printerStatuses, nowMs, sjfEnabled, workingSecondsLeft, workingHoursUntil, afterHoursOrder, nextWorkingHoursOpening]);
 
   // Lanes: every printer + every distinct target_model with queue activity
   // + an "unassigned" lane if needed. Printers that have NO events queued

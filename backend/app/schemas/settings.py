@@ -736,6 +736,15 @@ class AppSettings(BaseModel):
     def queue_working_hours_active_until(self) -> datetime | None:
         return self.queue_working_hours.active_until(datetime.now(timezone.utc))
 
+    @computed_field
+    @property
+    def queue_working_hours_next_opening(self) -> datetime | None:
+        now = datetime.now(timezone.utc)
+        hours = self.queue_working_hours
+        if hours.end_of_day == "longest_first" and hours.after_hours(now):
+            return hours.next_opening(now)
+        return None
+
     # The settings page sends every field back on each save, and the update
     # schema accepts only these values. A stored value outside them would make
     # every later save fail, so it is read back as what the service treats it as.

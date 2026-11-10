@@ -1598,6 +1598,7 @@ export interface AppSettings {
   queue_shortest_first: boolean;
   queue_working_hours: { enabled: boolean; start: string; end: string; end_of_day?: WorkingHoursEndOfDay };
   queue_working_hours_active_until: string | null;
+  queue_working_hours_next_opening: string | null;
   // How many printers the queue may upload to at once (#2555). 1 restores the
   // old strictly-serial behaviour, where every printer waited out every other
   // printer's transfer.
@@ -1660,7 +1661,7 @@ export interface AppSettings {
 
 export type WorkingHoursEndOfDay = 'keep' | 'restore' | 'longest_first';
 
-export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured' | 'queue_working_hours_active_until'>>;
+export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured' | 'queue_working_hours_active_until' | 'queue_working_hours_next_opening'>>;
 
 // Settings as a page sees them: everything from GET /settings for a user who
 // may read it, otherwise the subset /settings/ui-preferences and

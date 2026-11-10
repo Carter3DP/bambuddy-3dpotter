@@ -91,6 +91,11 @@ export function hasWorkingHoursManualPosition(item: OrderableQueueItem, workingH
   return workingHoursUntil != null && item.working_hours_until === workingHoursUntil && !!item.working_hours_manual_position;
 }
 
+export function fitsBeforeOpening(item: OrderableQueueItem, secondsUntilOpening: number): boolean {
+  const seconds = item.print_time_seconds ?? 0;
+  return seconds > 0 && seconds <= secondsUntilOpening;
+}
+
 /** Keep manual jobs in their temporary slots while automatic jobs fill the gaps. */
 export function sortQueueItems<T extends OrderableQueueItem>(
   items: T[],
@@ -98,10 +103,16 @@ export function sortQueueItems<T extends OrderableQueueItem>(
   workingSecondsLeft: number,
   workingHoursUntil?: number,
   afterHoursOrder?: WorkingHoursEndOfDay,
+  secondsUntilOpening = Infinity,
 ): T[] {
   if (afterHoursOrder === 'longest_first') {
     const duration = (item: T) => Math.max(0, item.print_time_seconds ?? 0);
-    return [...items].sort((a, b) => duration(b) - duration(a) || compareQueueOrder(a, b, false));
+    return [...items].sort((a, b) => {
+      const aFits = fitsBeforeOpening(a, secondsUntilOpening);
+      const bFits = fitsBeforeOpening(b, secondsUntilOpening);
+      if (aFits !== bFits) return Number(bFits) - Number(aFits);
+      return duration(b) - duration(a) || compareQueueOrder(a, b, false);
+    });
   }
 
   const automaticOrder = [...items].sort((a, b) => compareQueueOrder(a, b, sjfEnabled, workingSecondsLeft));

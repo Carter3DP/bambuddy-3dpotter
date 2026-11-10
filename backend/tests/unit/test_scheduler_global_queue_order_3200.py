@@ -319,7 +319,7 @@ async def test_working_hours_manual_order_preserves_normal_positions(ctx, monkey
 
 
 @pytest.mark.parametrize(
-    ("enabled", "hour", "expected"), [(True, 17, "long"), (True, 9, "short"), (False, 17, "short")]
+    ("enabled", "hour", "expected"), [(True, 17, "medium"), (True, 8, None), (True, 9, "short"), (False, 17, "short")]
 )
 async def test_longest_job_first_only_applies_after_working_hours(ctx, monkeypatch, enabled, hour, expected):
     monkeypatch.setenv("TZ", "UTC")
@@ -328,10 +328,12 @@ async def test_longest_job_first_only_applies_after_working_hours(ctx, monkeypat
     await _set(ctx, "queue_shortest_first", "true")
     await _pinned(ctx, 1, print_time=None)
     short = await _pinned(ctx, 2, print_time=3600)
-    long = await _any(ctx, 3, print_time=16 * 3600)
+    await _any(ctx, 3, print_time=16 * 3600)
+    medium = await _any(ctx, 4, print_time=12 * 3600)
 
     now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
-    assert await _run(ctx, idle_printers={1}, now=now) == {{"short": short, "long": long}[expected]: 1}
+    dispatched = {"short": {short: 1}, "medium": {medium: 1}, None: {}}
+    assert await _run(ctx, idle_printers={1}, now=now) == dispatched[expected]
 
 
 async def test_keep_order_survives_scheduler_restart_and_expires_next_window(ctx, monkeypatch):

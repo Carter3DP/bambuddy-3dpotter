@@ -5554,7 +5554,7 @@ export function SettingsPage() {
                         className="mt-1 w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                       >
                         <option value="restore">{t('settings.workingHoursRestoreQueue', 'Restore the queue')}</option>
-                        <option value="longest_first">{t('settings.workingHoursLongestJobFirst', 'Longest job first')}</option>
+                        <option value="longest_first">{t('settings.workingHoursLongestJobFirst', 'Longest job that fits before opening')}</option>
                       </select>
                     </label>
                   )}

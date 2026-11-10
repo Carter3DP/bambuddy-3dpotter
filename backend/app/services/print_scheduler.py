@@ -1668,7 +1668,8 @@ class PrintScheduler:
             deadline = hours.active_until(now)
             after_hours = hours.after_hours(now)
             longest_first = after_hours and hours.end_of_day == "longest_first"
-            if longest_first:
+            next_opening = hours.next_opening(now) if longest_first else None
+            if next_opening is not None:
                 sjf_enabled = False
             duration = PrintQueueItem.print_time_seconds
             order: list[SQLColumnExpression[Any]] = []
@@ -2097,6 +2098,15 @@ class PrintScheduler:
                         # Waiting on the clock, not on a printer.
                         await hold_item(item, None)
                         skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
+                        continue
+
+                # Preserve staged jobs and their existing hold reasons.
+                if next_opening is not None and (not item.manual_start or item.filament_short):
+                    seconds = item.print_time_seconds
+                    remaining = (next_opening - datetime.now(timezone.utc)).total_seconds()
+                    if seconds is None or not 0 < seconds <= remaining:
+                        await hold_item(item, "Waiting for Working Hours: job cannot fit before opening", notify=False)
+                        skip_reasons["working_hours_opening"] = skip_reasons.get("working_hours_opening", 0) + 1
                         continue
 
                 # Skip items that require manual start, except an "any model"

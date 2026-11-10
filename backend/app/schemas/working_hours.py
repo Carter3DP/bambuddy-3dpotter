@@ -51,6 +51,15 @@ class WorkingHours(BaseModel):
     def after_hours(self, now: datetime) -> bool:
         return self.enabled and self.start != self.end and self.active_until(now) is None
 
+    def next_opening(self, now: datetime) -> datetime:
+        zone = local_zone()
+        today = now.astimezone(zone).date()
+        start = time.fromisoformat(self.start)
+        opening = datetime.combine(today, start, zone).astimezone(timezone.utc)
+        if opening <= now:
+            opening = datetime.combine(today + timedelta(days=1), start, zone).astimezone(timezone.utc)
+        return opening
+
     def last_closing(self, now: datetime) -> datetime:
         zone = local_zone()
         today = now.astimezone(zone).date()

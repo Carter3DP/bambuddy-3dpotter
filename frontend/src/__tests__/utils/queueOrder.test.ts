@@ -158,7 +158,7 @@ describe('after-hours queue order', () => {
   });
 
   it('sorts longest first, with unknown times last, regardless of SJF', () => {
-    expect(sortQueueItems(items, true, 0, undefined, 'longest_first').map(row => row.id)).toEqual([3, 1, 4, 2]);
+    expect(sortQueueItems(items, true, 0, undefined, 'longest_first', 3600).map(row => row.id)).toEqual([1, 4, 3, 2]);
   });
 
   it('restores the normal ordering independently of the saved working order', () => {
