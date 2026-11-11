@@ -18,7 +18,7 @@ Use **Change the queue at the end of the working day** to choose what happens at
 | --- | --- |
 | **Off — Keep the queue as is** | Keep the last order the scheduler observed during Working Hours, including manual placements. If there is no saved order for the window, use the normal queue order. |
 | **On → Restore the queue** | Use the normal queue order, including Shortest Job First if enabled. This is the default. |
-| **On → Longest job that fits before opening** | Start the longest eligible job estimated to finish before the next window opens. Jobs that are too long or have no estimate wait. If nothing fits, automatic dispatch waits until opening. |
+| **On → Longest job that fits before opening** | Start the longest eligible job estimated to finish before the next window opens. If no eligible job fits, dispatch follows the normal queue order, including Shortest Job First if enabled. Longer jobs and jobs without an estimate remain eligible. |
 
 Turning off Working Hours itself returns the queue to normal ordering.
 

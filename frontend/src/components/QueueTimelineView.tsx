@@ -179,13 +179,6 @@ export function QueueTimelineView({
           ? Math.max(chainEnd, scheduled.getTime())
           : chainEnd;
         const duration = (item.print_time_seconds || 3600) * 1000;
-        // The one-hour display fallback is not a valid after-hours estimate.
-        // Skip an oversized job without advancing the lane so a shorter job
-        // can still fit in the time left before opening.
-        const hasEstimate = (item.print_time_seconds ?? 0) > 0;
-        if (opening != null && (!hasEstimate || start + duration > opening)) {
-          continue;
-        }
         chainEnd = start + duration;
         result.push({
           item,

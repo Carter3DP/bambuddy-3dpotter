@@ -319,7 +319,8 @@ async def test_working_hours_manual_order_preserves_normal_positions(ctx, monkey
 
 
 @pytest.mark.parametrize(
-    ("enabled", "hour", "expected"), [(True, 17, "medium"), (True, 8, None), (True, 9, "short"), (False, 17, "short")]
+    ("enabled", "hour", "expected"),
+    [(True, 17, "medium"), (True, 8, "short"), (True, 9, "short"), (False, 17, "short")],
 )
 async def test_longest_job_first_only_applies_after_working_hours(ctx, monkeypatch, enabled, hour, expected):
     monkeypatch.setenv("TZ", "UTC")
@@ -332,8 +333,23 @@ async def test_longest_job_first_only_applies_after_working_hours(ctx, monkeypat
     medium = await _any(ctx, 4, print_time=12 * 3600)
 
     now = datetime(2026, 11, 9, hour, tzinfo=timezone.utc)
-    dispatched = {"short": {short: 1}, "medium": {medium: 1}, None: {}}
+    dispatched = {"short": {short: 1}, "medium": {medium: 1}}
     assert await _run(ctx, idle_printers={1}, now=now) == dispatched[expected]
+
+
+@pytest.mark.parametrize("print_time", [None, 16 * 3600])
+async def test_after_hours_priority_falls_back_for_printers_without_a_fitting_job(ctx, monkeypatch, print_time):
+    monkeypatch.setenv("TZ", "UTC")
+    hours = WorkingHours(enabled=True, start="08:30", end="16:30", end_of_day="longest_first")
+    await _set(ctx, "queue_working_hours", hours.model_dump_json())
+    fallback = await _pinned(ctx, 1, print_time=print_time)
+    await _pinned(ctx, 2, print_time=17 * 3600)
+    fitting = await _pinned(ctx, 3, printer_id=2, print_time=3600)
+
+    # A fitting job on another printer cannot displace the normal next job
+    # for printer 1, even when that job has no duration estimate.
+    now = datetime(2026, 11, 9, 17, tzinfo=timezone.utc)
+    assert await _run(ctx, idle_printers={1, 2}, now=now) == {fitting: 2, fallback: 1}
 
 
 async def test_keep_order_survives_scheduler_restart_and_expires_next_window(ctx, monkeypatch):

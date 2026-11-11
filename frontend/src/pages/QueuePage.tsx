@@ -86,7 +86,7 @@ import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { ColorSubstitutionNotes } from '../components/ColorSubstitutionNotes';
 import { QueueTimelineView } from '../components/QueueTimelineView';
-import { fitsBeforeOpening, hasWorkingHoursManualPosition, sortQueueItems } from '../utils/queueOrder';
+import { hasWorkingHoursManualPosition, sortQueueItems } from '../utils/queueOrder';
 import { BatchOrdersView } from '../components/BatchOrdersView';
 import { ThumbnailHoverPreview } from '../components/ThumbnailHoverPreview';
 import { buildLoadedFilaments, type LoadedFilament } from '../hooks/useFilamentMapping';
@@ -2323,16 +2323,13 @@ export function QueuePage() {
     // Claimants for each printer, in the order the scheduler would take them.
     // Staged and future-scheduled items are excluded: the scheduler skips both
     // without marking the printer busy, so neither holds up the item behind it.
-    const fitsAfterHours = (item: PrintQueueItem) => afterHoursOrder !== 'longest_first' ||
-      secondsUntilOpening == null || fitsBeforeOpening(item, secondsUntilOpening);
     const contenders = new Map<number, PrintQueueItem[]>();
     dispatchOrder
       .filter(
         item =>
           item.printer_id != null &&
           !item.manual_start &&
-          !isFutureScheduled(item) &&
-          fitsAfterHours(item)
+          !isFutureScheduled(item)
       )
       .forEach(item => {
         const list = contenders.get(item.printer_id!) ?? [];
@@ -2341,7 +2338,7 @@ export function QueuePage() {
       });
 
     queue.forEach(item => {
-      if (item.status !== 'pending' || (!item.manual_start && !fitsAfterHours(item))) return;
+      if (item.status !== 'pending') return;
       // Blocked, scheduled for later, or no usable duration to add.
       if (item.waiting_reason) return;
       if (isFutureScheduled(item)) return;
@@ -2368,7 +2365,7 @@ export function QueuePage() {
     });
 
     return eligible;
-  }, [queue, dispatchOrder, afterHoursOrder, secondsUntilOpening]);
+  }, [queue, dispatchOrder]);
 
   // The ETA is "now + duration", so it goes stale on its own. Nothing else
   // re-renders these rows while the queue payload is unchanged (react-query's

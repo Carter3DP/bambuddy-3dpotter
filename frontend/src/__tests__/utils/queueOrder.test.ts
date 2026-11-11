@@ -157,8 +157,12 @@ describe('after-hours queue order', () => {
     expect(sortQueueItems(items, false, 0, undefined, 'keep').map(row => row.id)).toEqual([3, 4, 1, 2]);
   });
 
-  it('sorts longest first, with unknown times last, regardless of SJF', () => {
+  it('prioritizes the longest fitting jobs, then falls back to SJF when enabled', () => {
     expect(sortQueueItems(items, true, 0, undefined, 'longest_first', 3600).map(row => row.id)).toEqual([1, 4, 3, 2]);
+  });
+
+  it('keeps the normal queue order for jobs that do not fit when SJF is off', () => {
+    expect(sortQueueItems(items, false, 0, undefined, 'longest_first', 3600).map(row => row.id)).toEqual([1, 4, 2, 3]);
   });
 
   it('restores the normal ordering independently of the saved working order', () => {
