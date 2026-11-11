@@ -1669,17 +1669,16 @@ class PrintScheduler:
             after_hours = hours.after_hours(now)
             longest_first = after_hours and hours.end_of_day == "longest_first"
             next_opening = hours.next_opening(now) if longest_first else None
-            if next_opening is not None:
-                # Longest-first takes precedence over SJF during the gap
-                # between working windows.
-                sjf_enabled = False
             duration = PrintQueueItem.print_time_seconds
             order: list[SQLColumnExpression[Any]] = []
             if deadline is not None:
                 seconds_left = (deadline - now).total_seconds()
                 order.append(case(((duration > 0) & (duration <= seconds_left), 0), else_=1))
             if next_opening is not None:
-                order.append(case((duration > 0, duration)).desc().nullslast())
+                # Rank jobs that fit longest first. The rest tie on this key
+                # and keep the normal queue order, just as they do before closing.
+                seconds_left = (next_opening - now).total_seconds()
+                order.append(case(((duration > 0) & (duration <= seconds_left), duration)).desc().nullslast())
             if sjf_enabled:
                 # Keep the starvation guard and sort unknown durations last.
                 order.extend((PrintQueueItem.been_jumped.desc(), duration.asc().nullslast()))
@@ -2104,18 +2103,6 @@ class PrintScheduler:
                         # Waiting on the clock, not on a printer.
                         await hold_item(item, None)
                         skip_reasons["scheduled_future"] = skip_reasons.get("scheduled_future", 0) + 1
-                        continue
-
-                # Recheck the time before considering each job: printer and
-                # filament checks earlier in this pass may have used up part
-                # of the window. Leave staged jobs to their usual hold logic
-                # unless the scheduler can release their filament hold.
-                if next_opening is not None and (not item.manual_start or item.filament_short):
-                    seconds = item.print_time_seconds
-                    remaining = (next_opening - datetime.now(timezone.utc)).total_seconds()
-                    if seconds is None or not 0 < seconds <= remaining:
-                        await hold_item(item, "Waiting for Working Hours: job cannot fit before opening", notify=False)
-                        skip_reasons["working_hours_opening"] = skip_reasons.get("working_hours_opening", 0) + 1
                         continue
 
                 # Skip items that require manual start, except an "any model"

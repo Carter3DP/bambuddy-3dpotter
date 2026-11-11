@@ -93,7 +93,7 @@ export function hasWorkingHoursManualPosition(item: OrderableQueueItem, workingH
     !!item.working_hours_manual_position;
 }
 
-export function fitsBeforeOpening(item: OrderableQueueItem, secondsUntilOpening: number): boolean {
+function fitsBeforeOpening(item: OrderableQueueItem, secondsUntilOpening: number): boolean {
   const seconds = item.print_time_seconds ?? 0;
   return seconds > 0 && seconds <= secondsUntilOpening;
 }
@@ -108,13 +108,16 @@ export function sortQueueItems<T extends OrderableQueueItem>(
   secondsUntilOpening = Infinity,
 ): T[] {
   if (afterHoursOrder === 'longest_first') {
-    // Keep held jobs visible below the ones the scheduler can start.
-    const duration = (item: T) => Math.max(0, item.print_time_seconds ?? 0);
+    // Jobs that do not fit fall back to the normal queue order.
     return [...items].sort((a, b) => {
       const aFits = fitsBeforeOpening(a, secondsUntilOpening);
       const bFits = fitsBeforeOpening(b, secondsUntilOpening);
       if (aFits !== bFits) return Number(bFits) - Number(aFits);
-      return duration(b) - duration(a) || compareQueueOrder(a, b, false);
+      if (aFits && bFits) {
+        const durationDifference = (b.print_time_seconds ?? 0) - (a.print_time_seconds ?? 0);
+        if (durationDifference) return durationDifference;
+      }
+      return compareQueueOrder(a, b, sjfEnabled);
     });
   }
 
