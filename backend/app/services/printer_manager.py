@@ -852,6 +852,8 @@ class PrinterManager:
         printer_id = printer.id
 
         def on_state_change(state: PrinterState):
+            if state.connected:
+                self._schedule_async(self.save_last_known_trays(printer_id, state))
             if self._on_status_change:
                 self._schedule_async(self._on_status_change(printer_id, state))
 
