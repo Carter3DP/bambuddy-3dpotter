@@ -50,7 +50,7 @@ async def _run_with_backup(scheduler, backup_state, prefer_lowest_setting):
 
     captured: dict = {}
 
-    def _capture_match(reqs, loaded_, prefer, overrides, fts_installed=False):
+    def _capture_match(reqs, loaded_, prefer, overrides, fts_installed=False, *, color_match_threshold=0):
         captured["prefer_lowest"] = prefer
         return [0]
 
