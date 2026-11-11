@@ -5558,6 +5558,11 @@ export function SettingsPage() {
                         <option value="restore">{t('settings.workingHoursRestoreQueue', 'Restore the queue')}</option>
                         <option value="longest_first">{t('settings.workingHoursLongestJobFirst', 'Longest job that fits before opening')}</option>
                       </select>
+                      {workingHours.end_of_day === 'longest_first' && (
+                        <span className="mt-1 block">
+                          {t('settings.workingHoursLongestJobFirstHelp', 'If no eligible job fits before opening, use the normal queue order.')}
+                        </span>
+                      )}
                     </label>
                   )}
                 </div>
