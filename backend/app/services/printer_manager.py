@@ -4,8 +4,10 @@ import math
 import re
 import traceback
 from collections.abc import Callable
+from typing import cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
@@ -827,7 +829,7 @@ class PrinterManager:
                         .values(last_known_trays=snapshot, updated_at=Printer.updated_at)
                     )
                     await db.commit()
-                    if result.rowcount:
+                    if cast(CursorResult, result).rowcount:
                         self._last_trays[printer_id] = snapshot
         except Exception:
             logger.exception("Could not save last-known filament for printer %s", printer_id)
