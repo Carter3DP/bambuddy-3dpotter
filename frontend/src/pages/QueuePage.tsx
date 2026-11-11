@@ -86,6 +86,7 @@ import { QueueStatsBar } from '../components/QueueStatsBar';
 import { CompactHistoryRow } from '../components/CompactHistoryRow';
 import { ColorSubstitutionNotes } from '../components/ColorSubstitutionNotes';
 import { QueueTimelineView } from '../components/QueueTimelineView';
+import { forecastQueue, type QueueForecastEntry } from '../utils/queueForecast';
 import { hasWorkingHoursManualPosition, sortQueueItems } from '../utils/queueOrder';
 import { BatchOrdersView } from '../components/BatchOrdersView';
 import { ThumbnailHoverPreview } from '../components/ThumbnailHoverPreview';
@@ -586,8 +587,7 @@ function SortableQueueItem({
   hasPermission,
   canModify,
   printerState,
-  showEta = false,
-  etaNow,
+  forecast,
   t,
 }: {
   item: PrintQueueItem;
@@ -616,8 +616,7 @@ function SortableQueueItem({
   // Whether this item qualifies for an "if started now" ETA (#2740), and the
   // instant to measure it from. Both are decided by the page so every row on
   // screen quotes the same clock.
-  showEta?: boolean;
-  etaNow?: number;
+  forecast?: QueueForecastEntry;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const { hasAnyPermission } = useAuth();
@@ -713,15 +712,12 @@ function SortableQueueItem({
   const isPending = item.status === 'pending';
   const isHistory = ['completed', 'failed', 'skipped', 'cancelled'].includes(item.status);
 
-  // This is an "if started now" estimate, not a cumulative queue forecast, so
-  // it is only shown for items the page determined could actually start now
-  // (see etaEligibleIds). etaNow is the caller's ticking clock — deriving the
-  // ETA from it rather than from Date.now() keeps this render deterministic and
-  // stops the value freezing at first paint.
-  const queueItemEta =
-    isPending && showEta && item.print_time_seconds != null && item.print_time_seconds > 0
-      ? formatETA(item.print_time_seconds / 60, timeFormat, t, etaNow)
-      : null;
+  const queueItemEta = isPending && forecast
+    ? new Date(forecast.finishesAt).toLocaleString([], {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      hour12: timeFormat === 'system' ? undefined : timeFormat === '12h',
+    })
+    : null;
 
   const isMobileSelectable = isPending && onToggleSelect;
   const thumbnailUrl = queueItemThumbnailUrl(item);
@@ -908,9 +904,9 @@ function SortableQueueItem({
               <span
                 data-testid="queue-item-eta"
                 className="text-bambu-green font-medium"
-                title={t('queue.time.etaIfStartedNow')}
+                title={t('queue.time.forecastFinish', { defaultValue: 'Estimated finish based on the current queue' })}
               >
-                ETA {queueItemEta}
+                {t('queue.time.forecastEta', { defaultValue: 'ETA {{time}} on {{printer}}', time: queueItemEta, printer: forecast?.printerName })}
               </span>
             )}
             {item.filament_used_grams && (
@@ -1254,11 +1250,10 @@ interface QueueRowRenderProps {
   t: (key: string, options?: Record<string, unknown>) => string;
   // Items that qualify for an "if started now" ETA, and the shared clock it is
   // measured from (#2740).
-  etaEligibleIds: Set<number>;
+  queueForecast: Map<number, QueueForecastEntry>;
   workingHoursMovedIds: Set<number>;
   workingHoursUntil?: number;
   clearManualPosition?: (item: PrintQueueItem) => void;
-  etaNow: number;
   aggregateForRows: (rows: QueueRow[]) => { count: number; time: number; weight: number };
   // Mobile tap-to-reorder (#2667). onMoveUp/onMoveDown move this whole row
   // (single item or batch) one step among its siblings; onMoveBlock is the
@@ -1285,11 +1280,10 @@ function QueueRowRender(props: QueueRowRenderProps) {
     hasPermission,
     canModify,
     t,
-    etaEligibleIds,
+    queueForecast,
     workingHoursMovedIds,
     workingHoursUntil,
     clearManualPosition,
-    etaNow,
     onMoveUp,
     onMoveDown,
     reorderDisabled,
@@ -1316,8 +1310,7 @@ function QueueRowRender(props: QueueRowRenderProps) {
         onToggleSelect={() => handleToggleSelect(row.item.id)}
         hasPermission={hasPermission}
         canModify={canModify}
-        showEta={etaEligibleIds.has(row.item.id)}
-        etaNow={etaNow}
+        forecast={queueForecast.get(row.item.id)}
         t={t}
       />
     );
@@ -1343,11 +1336,10 @@ function SortableBatchRow({
   hasPermission,
   canModify,
   t,
-  etaEligibleIds,
+  queueForecast,
   workingHoursMovedIds,
   workingHoursUntil,
   clearManualPosition,
-  etaNow,
   aggregateForRows,
   onMoveUp,
   onMoveDown,
@@ -1544,8 +1536,7 @@ function SortableBatchRow({
               onToggleSelect={() => handleToggleSelect(child.id)}
               hasPermission={hasPermission}
               canModify={canModify}
-              showEta={etaEligibleIds.has(child.id)}
-              etaNow={etaNow}
+              forecast={queueForecast.get(child.id)}
               t={t}
             />
           ))}
@@ -2294,100 +2285,17 @@ export function QueuePage() {
     return items;
   }, [queue, filterLocation, matchesLocationFilter]);
 
-  // Queue items eligible for an "if started now" ETA (#2740).
-  //
-  // The ETA answers "when would this finish if it began right now", so it may
-  // only appear on items that really could begin right now. waiting_reason now
-  // covers the pinned-printer case too (#3074), but it is still not enough on
-  // its own: it says whether the scheduler had a reason to hold the item on its
-  // last pass, not whether this item is the one that printer takes next. Two
-  // items pinned to the same free printer both come back with no reason, and
-  // only one of them can start now — which is what the ordering below works out.
-  //
-  // Computed from the unfiltered queue on purpose — hiding a printer behind the
-  // location filter must not make its printer look free.
-  const etaEligibleIds = useMemo(() => {
-    const eligible = new Set<number>();
-    if (!queue) return eligible;
-
-    const busyPrinters = new Set<number>();
-    queue.forEach(item => {
-      if (item.status === 'printing' && item.printer_id) busyPrinters.add(item.printer_id);
-    });
-
-    const isFutureScheduled = (item: PrintQueueItem): boolean => {
-      if (!item.scheduled_time) return false;
-      return (parseUTCDate(item.scheduled_time)?.getTime() ?? 0) > Date.now();
-    };
-
-    // Claimants for each printer, in the order the scheduler would take them.
-    // Staged and future-scheduled items are excluded: the scheduler skips both
-    // without marking the printer busy, so neither holds up the item behind it.
-    const contenders = new Map<number, PrintQueueItem[]>();
-    dispatchOrder
-      .filter(
-        item =>
-          item.printer_id != null &&
-          !item.manual_start &&
-          !isFutureScheduled(item)
-      )
-      .forEach(item => {
-        const list = contenders.get(item.printer_id!) ?? [];
-        list.push(item);
-        contenders.set(item.printer_id!, list);
-      });
-
-    queue.forEach(item => {
-      if (item.status !== 'pending') return;
-      // Blocked, scheduled for later, or no usable duration to add.
-      if (item.waiting_reason) return;
-      if (isFutureScheduled(item)) return;
-      if (item.print_time_seconds == null || item.print_time_seconds <= 0) return;
-      // Conditional on an earlier print's outcome, which the UI cannot see: the
-      // scheduler may skip it outright rather than ever running it.
-      if (item.require_previous_success) return;
-
-      // Model-based items have no printer yet; an empty waiting_reason is the
-      // scheduler saying it found one, so trust that.
-      if (item.printer_id == null) {
-        eligible.add(item.id);
-        return;
-      }
-
-      if (busyPrinters.has(item.printer_id)) return;
-      // Staged items wait on the user, not on the queue, so they are startable
-      // whenever their printer is free regardless of what is queued ahead.
-      if (item.manual_start) {
-        eligible.add(item.id);
-        return;
-      }
-      if (contenders.get(item.printer_id)?.[0]?.id === item.id) eligible.add(item.id);
-    });
-
-    return eligible;
-  }, [queue, dispatchOrder]);
-
-  // The ETA is "now + duration", so it goes stale on its own. Nothing else
-  // re-renders these rows while the queue payload is unchanged (react-query's
-  // structural sharing keeps the reference stable), so drive it from a clock of
-  // our own. Only runs while an ETA is actually on screen.
-  const [etaNow, setEtaNow] = useState(() => Date.now());
-  const hasEtas = etaEligibleIds.size > 0;
-  useEffect(() => {
-    if (!hasEtas) return;
-    setEtaNow(Date.now());
-    const id = setInterval(() => setEtaNow(Date.now()), 30000);
-    return () => clearInterval(id);
-  }, [hasEtas]);
-
-  // Get unique printer IDs from active items to fetch their statuses
-  const activePrinterIds = useMemo(() => {
-    const ids = new Set<number>();
-    activeItems.forEach(item => {
-      if (item.printer_id) ids.add(item.printer_id);
-    });
-    return Array.from(ids);
-  }, [activeItems]);
+  // A filter only changes what's displayed. Other jobs still occupy printers
+  // and must be included when forecasting the fleet's dispatch order.
+  const allActiveStatuses = ACTIVE_STATUSES.join(',');
+  const { data: unfilteredQueue } = useQuery({
+    queryKey: ['queue', null, allActiveStatuses],
+    queryFn: () => api.getQueue(undefined, allActiveStatuses),
+    refetchInterval: 5000,
+    enabled: activeStatuses !== null && (filterPrinter !== null || activeStatuses !== allActiveStatuses),
+  });
+  const forecastItems = unfilteredQueue ?? queue ?? EMPTY_QUEUE;
+  const activePrinterIds = useMemo(() => printers?.filter(printer => printer.is_active).map(printer => printer.id) ?? [], [printers]);
 
   // Fetch printer statuses for printers with active jobs
   const printerStatusQueries = useQueries({
@@ -2410,21 +2318,14 @@ export function QueuePage() {
     return map;
   }, [activePrinterIds, printerStatusQueries]);
 
-  // Build a map of printer_id -> full status for timeline view
-  const printerStatusMap = useMemo(() => {
-    const map: Record<number, { progress?: number; remaining_time?: number; state?: string }> = {};
-    activePrinterIds.forEach((printerId, index) => {
-      const result = printerStatusQueries[index];
-      if (result?.data) {
-        map[printerId] = {
-          progress: result.data.progress ?? undefined,
-          remaining_time: result.data.remaining_time ?? undefined,
-          state: result.data.state ?? undefined,
-        };
-      }
-    });
-    return map;
-  }, [activePrinterIds, printerStatusQueries]);
+  const printerStatusMap = useMemo(() => Object.fromEntries(activePrinterIds.flatMap((id, index) => {
+    const status = printerStatusQueries[index]?.data;
+    return status ? [[id, status] as const] : [];
+  })), [activePrinterIds, printerStatusQueries]);
+  const forecastNow = Math.max(lastPollAt, ...printerStatusQueries.map(query => query.dataUpdatedAt));
+  const queueForecast = useMemo(() => forecastQueue(
+    forecastItems, printers ?? [], printerStatusMap, settings, forecastNow || Date.now(),
+  ), [forecastItems, printers, printerStatusMap, settings, forecastNow]);
 
   // Filtered and sorted by the server; see the history query above.
   const historyItems = historyPage?.items ?? EMPTY_QUEUE;
@@ -3042,11 +2943,7 @@ export function QueuePage() {
           queueItems={queue || []}
           printers={printers || []}
           printerStatuses={printerStatusMap}
-          sjfEnabled={sjfEnabled}
-          workingSecondsLeft={workingSecondsLeft}
-          workingHoursUntil={workingHoursUntil}
-          afterHoursOrder={afterHoursOrder}
-          nextWorkingHoursOpening={nextOpening}
+          forecast={queueForecast}
           onItemClick={(item) => {
             if (['completed', 'failed', 'skipped', 'cancelled'].includes(item.status)) {
               setRequeueItem(item);
@@ -3237,8 +3134,7 @@ export function QueuePage() {
                           hasPermission={hasPermission}
                           canModify={canModify}
                           t={t}
-                          etaEligibleIds={etaEligibleIds}
-                          etaNow={etaNow}
+                          queueForecast={queueForecast}
                           aggregateForRows={aggregateForRows}
                           {...rowMovers(groupedRows, idx)}
                           workingHoursMovedIds={workingHoursMovedIds}
@@ -3281,8 +3177,7 @@ export function QueuePage() {
                                   hasPermission={hasPermission}
                                   canModify={canModify}
                                   t={t}
-                                  etaEligibleIds={etaEligibleIds}
-                                  etaNow={etaNow}
+                                  queueForecast={queueForecast}
                                   aggregateForRows={aggregateForRows}
                                   {...rowMovers(bucket.rows, idx)}
                                   workingHoursMovedIds={workingHoursMovedIds}

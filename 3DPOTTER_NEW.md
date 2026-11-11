@@ -24,6 +24,12 @@ Turning off Working Hours itself returns the queue to normal ordering.
 
 PostgreSQL upgrades now align the Working Hours manual-position default with fresh installs. Existing queue positions and manual placements are preserved.
 
+## Queue finish forecast
+
+Pending jobs show a predicted printer and finish time. The Timeline places those jobs on the predicted printer's lane. Bambuddy uses live printer status, filament compatibility, scheduled starts, queue order, and Working Hours at each predicted start. Change the setup allowance under **Settings → Workflow → Queue & Dispatch → Queue Forecast**. It defaults to **5 minutes** between prints on each printer and affects estimates only.
+
+The forecast skips jobs that need a manual action and leaves offline printers out until they reconnect. If a job has no duration estimate, the forecast stops at that job on its predicted printer and continues on other printers. Predictions update as printer status and the queue change.
+
 ## Docker images
 
 The [Docker publishing workflow](.github/workflows/docker-publish.yml) builds `linux/amd64` and `linux/arm64` images for `ghcr.io/carter3dp/bambuddy-3dpotter`. It runs on pushes to `main`, version tags beginning with `v`, and manual runs. A manual run uses the selected branch name as a tag, with characters such as `/` replaced by `-`.

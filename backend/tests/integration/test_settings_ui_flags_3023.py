@@ -149,6 +149,8 @@ class TestWhatItExposes:
             "check_updates",
             "queue_shortest_first",
             "queue_working_hours",
+            "queue_forecast_gap_minutes",
+            "queue_working_hours_timezone",
             "queue_working_hours_active_until",
             "queue_working_hours_next_opening",
             "use_slicer_api",
