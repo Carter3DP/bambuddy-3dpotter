@@ -24,11 +24,9 @@ Turning off Working Hours itself returns the queue to normal ordering.
 
 PostgreSQL upgrades now align the Working Hours manual-position default with fresh installs. Existing queue positions and manual placements are preserved.
 
-## Queue finish forecast
+## Offline printer filament matching
 
-Pending jobs show a predicted printer and finish time. The Timeline places those jobs on the predicted printer's lane. Bambuddy uses live printer status, filament compatibility, scheduled starts, queue order, and Working Hours at each predicted start. Change the setup allowance under **Settings → Workflow → Queue & Dispatch → Queue Forecast**. It defaults to **5 minutes** between prints on each printer and affects estimates only.
-
-The forecast skips jobs that need a manual action and leaves offline printers out until they reconnect. If a job has no duration estimate, the forecast stops at that job on its predicted printer and continues on other printers. Predictions update as printer status and the queue change.
+Bambuddy saves the last reported AMS and external spool filament for each printer across restarts. Model-based queue jobs use that reading to skip offline printers with incompatible filament, including when deciding which printer to wake with a smart plug. When a compatible printer is busy, the queue shows that printer instead of listing incompatible offline printers.
 
 ## Docker images
 
