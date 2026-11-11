@@ -4126,6 +4126,9 @@ async def _run_migrations(conn):
     # Migration: Add camera_rotation column to printers
     await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN camera_rotation INTEGER DEFAULT 0")
 
+    # Offline queue matching needs the last reported filament across restarts.
+    await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN last_known_trays JSON")
+
     # Migration: Add awaiting_plate_clear column to printers (#961)
     await _safe_execute(conn, "ALTER TABLE printers ADD COLUMN awaiting_plate_clear BOOLEAN DEFAULT FALSE NOT NULL")
 
