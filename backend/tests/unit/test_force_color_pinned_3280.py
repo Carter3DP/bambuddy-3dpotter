@@ -60,6 +60,7 @@ def _scheduler(trays, requirements=REQUIREMENTS):
         return_value=[dict(r) for r in requirements] if requirements else None
     )
     scheduler._get_bool_setting = AsyncMock(return_value=False)
+    scheduler._get_int_setting = AsyncMock(return_value=0)
     scheduler._get_job_name = AsyncMock(return_value="bracket")
     scheduler._get_printer = AsyncMock(return_value=MagicMock(model="A1"))
     return scheduler
@@ -121,6 +122,55 @@ class TestMatcherHonoursForcedSlots:
         """Nothing changes for jobs that did not ask for strict matching."""
         req = {"slot_id": 1, "type": "PLA", "color": "#A4AAAC", "tray_info_idx": ""}
         assert PrintScheduler()._match_filaments_to_slots([req], A1_TRAYS) == [1]
+
+
+class TestForcedColorThreshold:
+    @pytest.mark.parametrize(("threshold", "expected"), [(0, [-1]), (1, [-1]), (2, [0])])
+    def test_threshold_is_applied_to_each_rgb_channel(self, threshold, expected):
+        trays = [_tray(0, "A0A8AAFF")]
+        assert (
+            PrintScheduler()._match_filaments_to_slots([_forced_req()], trays, color_match_threshold=threshold)
+            == expected
+        )
+
+    def test_full_tolerance_still_requires_type_variant_and_nozzle(self):
+        req = {**_forced_req("#FFFFFF"), "nozzle_id": 1}
+        trays = [
+            {**_tray(0, "FFFFFFFF", type_="PETG"), "extruder_id": 1},
+            {**_tray(1, "FFFFFFFF", idx="GFA01"), "extruder_id": 1},
+            {**_tray(2, "FFFFFFFF"), "extruder_id": 0},
+            {**_tray(3, "000000FF"), "extruder_id": 1},
+        ]
+        assert PrintScheduler()._match_filaments_to_slots([req], trays, color_match_threshold=100) == [3]
+
+    def test_overlapping_colors_use_distinct_trays(self):
+        # Slot 1 can use both trays and prefers tray 0. Slot 2 can only use tray 0.
+        requirements = [_forced_req("#404040"), {**_forced_req("#303030"), "slot_id": 2}]
+        trays = [_tray(0, "404040FF"), _tray(1, "505050FF")]
+        raw_data = {
+            "ams": [
+                {
+                    "tray": [
+                        {"tray_type": tray["type"], "tray_color": tray["color"], "tray_info_idx": tray["tray_info_idx"]}
+                        for tray in trays
+                    ]
+                }
+            ]
+        }
+        scheduler = PrintScheduler()
+        assert scheduler._get_missing_force_color_slots(4, requirements, raw_data, color_match_threshold=7) == []
+        assert scheduler._match_filaments_to_slots(requirements, trays, color_match_threshold=7) == [1, 0]
+
+    @pytest.mark.parametrize("requirements", [None, REQUIREMENTS])
+    async def test_pinned_mapping_and_saved_mapping_read_threshold(self, requirements):
+        scheduler = _scheduler([_tray(0, "A0A8AAFF")], requirements)
+        scheduler._get_int_setting.return_value = 2
+        with patch("backend.app.services.print_scheduler.printer_manager") as pm:
+            pm.get_status.return_value = MagicMock(raw_data={})
+            assert await scheduler._compute_ams_mapping_for_printer(AsyncMock(), 4, _item()) == [0]
+            assert await scheduler._stored_mapping_conflict(AsyncMock(), 4, _item(), [0]) is None
+            scheduler._get_int_setting.return_value = 0
+            assert await scheduler._stored_mapping_conflict(AsyncMock(), 4, _item(), [0]) is not None
 
 
 class TestOverridesCarryTheForceFlag:

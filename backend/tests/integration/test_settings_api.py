@@ -44,6 +44,21 @@ class TestSettingsAPI:
         assert isinstance(result["currency"], str)
 
     @pytest.mark.integration
+    async def test_color_match_threshold_round_trip(self, async_client: AsyncClient):
+        route = "/api/v1/settings/"
+        assert (await async_client.get(route)).json()["color_match_threshold"] == 0
+
+        response = await async_client.put(route, json={"color_match_threshold": 12})
+        assert response.status_code == 200
+        assert response.json()["color_match_threshold"] == 12
+        for invalid in (-1, 101, 2.5):
+            response = await async_client.patch(route, json={"color_match_threshold": invalid})
+            assert response.status_code == 422
+
+        assert (await async_client.get(route)).json()["color_match_threshold"] == 12
+        assert (await async_client.get(route + "ui-flags")).json()["color_match_threshold"] == 12
+
+    @pytest.mark.integration
     async def test_queue_forecast_gap_round_trip(self, async_client: AsyncClient):
         route = "/api/v1/settings/"
         assert (await async_client.get(route)).json()["queue_forecast_gap_minutes"] == 5

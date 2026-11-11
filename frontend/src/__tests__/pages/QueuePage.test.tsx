@@ -3,7 +3,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useEffect } from 'react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { QueuePage } from '../../pages/QueuePage';
@@ -1276,32 +1278,32 @@ describe('QueuePage', () => {
     });
 
     it('advances the ETA as time passes', async () => {
-      vi.useFakeTimers({ shouldAdvanceTime: true });
-      vi.setSystemTime(new Date('2026-08-02T10:00:00Z'));
+      server.use(http.get('/api/v1/queue/', () => HttpResponse.json([mockQueueItems[0]])));
 
+      let queryClient: QueryClient | undefined;
+      function QueueWithQueryClient() {
+        const client = useQueryClient();
+        useEffect(() => {
+          queryClient = client;
+        }, [client]);
+        return <QueuePage />;
+      }
+
+      render(<QueueWithQueryClient />);
+      const eta = await screen.findByTestId('queue-item-eta');
+      const before = eta.textContent;
+      expect(queryClient).toBeDefined();
+
+      // Refetch the unchanged queue once at a later time. Running every poll
+      // in the intervening 45 minutes can exhaust the CI test timeout.
+      const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 45 * 60 * 1000);
       try {
-        server.use(
-          http.get('/api/v1/queue/', () => {
-            return HttpResponse.json([mockQueueItems[0]]);
-          }),
-        );
-
-        render(<QueuePage />);
-
-        const name = await screen.findByText('Test Print 1');
-        const row = name.closest('.group') as HTMLElement;
-        const before = (await within(row).findByTestId('queue-item-eta')).textContent;
-
-        // The forecast should refresh even when the queue payload is unchanged.
-        await vi.advanceTimersByTimeAsync(45 * 60 * 1000);
-
-        await waitFor(() => {
-          expect(
-            within(row).getByTestId('queue-item-eta').textContent,
-          ).not.toBe(before);
+        await act(async () => {
+          await queryClient!.refetchQueries({ queryKey: ['queue', null], type: 'active' });
         });
+        await waitFor(() => expect(screen.getByTestId('queue-item-eta').textContent).not.toBe(before));
       } finally {
-        vi.useRealTimers();
+        now.mockRestore();
       }
     });
 

@@ -24,6 +24,9 @@ Turning off Working Hours itself returns the queue to normal ordering.
 
 PostgreSQL upgrades now align the Working Hours manual-position default with fresh installs. Existing queue positions and manual placements are preserved.
 
+## Color match threshold
+
+Set **Color match threshold (%)** in **Settings → Workflow → Default Print Options**. It applies to queued jobs and virtual printer jobs that use **Force color match**. The default of **0%** requires the exact hex color. Intermediate values allow that percentage of the full range of difference in each red, green, and blue channel. **100%** allows any color. Material type and existing filament variant checks still apply.
 ## Offline printer filament matching
 
 Bambuddy saves the last reported AMS and external spool filament for each printer across restarts. Model-based queue jobs use that reading to skip offline printers with incompatible filament, including when deciding which printer to wake with a smart plug. When a compatible printer is busy, the queue shows that printer instead of listing incompatible offline printers.

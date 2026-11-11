@@ -1572,6 +1572,7 @@ export interface AppSettings {
   // User email notifications toggle
   user_notifications_enabled: boolean;
   // Default print options
+  color_match_threshold: number;
   default_bed_levelling: CalibrationMode;
   default_flow_cali: CalibrationMode;
   default_vibration_cali: boolean;

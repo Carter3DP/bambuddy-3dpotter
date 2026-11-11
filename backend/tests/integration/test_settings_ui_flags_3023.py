@@ -161,6 +161,7 @@ class TestWhatItExposes:
             "per_printer_mapping_expanded",
             "default_filament_cost",
             "default_bed_levelling",
+            "color_match_threshold",
             "default_flow_cali",
             "default_vibration_cali",
             "default_layer_inspect",

@@ -150,7 +150,9 @@ class TestComputeAmsMappingFallback:
 
     @pytest.fixture
     def scheduler(self):
-        return PrintScheduler()
+        scheduler = PrintScheduler()
+        scheduler._get_int_setting = AsyncMock(return_value=0)
+        return scheduler
 
     def _make_item(self, filament_overrides_json: str | None = None) -> MagicMock:
         item = MagicMock()
