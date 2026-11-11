@@ -39,7 +39,7 @@ function timelineImages(queued: PrintQueueItem): string[] {
       queueItems={[queued]}
       printers={printers}
       printerStatuses={{ 1: { progress: 50, remaining_time: 30, state: 'RUNNING' } }}
-      sjfEnabled={false}
+      forecast={new Map()}
       onItemClick={() => {}}
       t={(key: string) => key}
     />,

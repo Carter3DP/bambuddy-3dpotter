@@ -200,6 +200,9 @@ class QueueVariantSummary(BaseModel):
     filename: str
     target_model: str
     position: int
+    print_time_seconds: int | None = None
+    required_filament_types: list[str] | None = None
+    filament_overrides: list[dict] | None = None
 
 
 class ColorSubstitution(BaseModel):

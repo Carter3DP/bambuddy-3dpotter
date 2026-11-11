@@ -105,7 +105,7 @@ const mockPrinters = [
     serial_number: 'TESTSERIAL0001',
     access_code: '12345678',
     model: 'X1C',
-    enabled: true,
+    is_active: true,
     created_at: '2024-01-01T00:00:00Z',
   },
 ];
@@ -151,6 +151,9 @@ describe('QueuePage', () => {
       http.get('/api/v1/printers/', () => {
         return HttpResponse.json(mockPrinters);
       }),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json({ id: 1, name: 'Test Printer', state: 'IDLE', connected: true, ams: [], vt_tray: [] }),
+      ),
       http.delete('/api/v1/queue/:id', () => {
         return HttpResponse.json({ success: true });
       }),
@@ -1165,7 +1168,7 @@ describe('QueuePage', () => {
       });
     });
 
-    it('shows one if-started-now ETA for an eligible pending item', async () => {
+    it('shows a forecast ETA and printer for an eligible pending item', async () => {
       // Printer 1 is free: nothing is printing on it and nothing is queued ahead.
       server.use(
         http.get('/api/v1/queue/', () => {
@@ -1179,35 +1182,23 @@ describe('QueuePage', () => {
       const row = name.closest('.group');
 
       expect(row).not.toBeNull();
-      const etaEl = within(row as HTMLElement).getAllByTestId('queue-item-eta');
+      const etaEl = await within(row as HTMLElement).findAllByTestId('queue-item-eta');
       expect(etaEl).toHaveLength(1);
-      // The tooltip must say what the number actually means, not reuse the
-      // printers-page "Estimated completion time" wording (which this is not).
       expect(etaEl[0]).toHaveAttribute(
         'title',
-        'Completion time if this job started now',
+        'Estimated finish based on the current queue',
       );
     });
 
-    // The scheduler only writes waiting_reason on the model-based assignment
-    // path, so an item pinned to a specific printer carries no marker at all
-    // while it sits behind a running job. Without the printer-busy check every
-    // one of these quoted the same wrong "starts now" time.
-    it('does not show an ETA for an item pinned behind a running print', async () => {
+    it('shows an ETA for an item pinned behind a running print', async () => {
       render(<QueuePage />);
 
-      // mockQueueItems[1] ("Active Print") is printing on printer 1, and
-      // "Test Print 1" is pending on the same printer with waiting_reason null.
       const name = await screen.findByText('Test Print 1');
-      const row = name.closest('.group');
-
-      expect(row).not.toBeNull();
-      expect(
-        within(row as HTMLElement).queryByTestId('queue-item-eta'),
-      ).not.toBeInTheDocument();
+      const row = name.closest('.group') as HTMLElement;
+      expect(await within(row).findByTestId('queue-item-eta')).toHaveTextContent('on Test Printer');
     });
 
-    it('shows the ETA only on the next item up when several share an idle printer', async () => {
+    it('forecasts every job that shares an idle printer', async () => {
       server.use(
         http.get('/api/v1/queue/', () => {
           return HttpResponse.json([
@@ -1220,17 +1211,17 @@ describe('QueuePage', () => {
 
       render(<QueuePage />);
 
-      await screen.findByText('Third up');
+      await waitFor(() => expect(screen.getAllByTestId('queue-item-eta')).toHaveLength(3));
 
       const etaRowNames = screen
-        .queryAllByTestId('queue-item-eta')
+        .getAllByTestId('queue-item-eta')
         .map((el) => el.closest('.group')?.textContent);
 
-      expect(etaRowNames).toHaveLength(1);
+      expect(etaRowNames).toHaveLength(3);
       expect(etaRowNames[0]).toContain('First up');
     });
 
-    it('shows an ETA for a staged item queued behind others on an idle printer', async () => {
+    it('omits staged items from the forecast', async () => {
       // The scheduler skips manual-start items without claiming the printer, so
       // a staged job is startable whenever its printer is free — queue order
       // does not gate it.
@@ -1256,8 +1247,8 @@ describe('QueuePage', () => {
 
       expect(row).not.toBeNull();
       expect(
-        within(row as HTMLElement).getAllByTestId('queue-item-eta'),
-      ).toHaveLength(1);
+        within(row as HTMLElement).queryByTestId('queue-item-eta'),
+      ).not.toBeInTheDocument();
     });
 
     it('does not show an ETA for an item conditional on a previous print', async () => {
@@ -1299,11 +1290,9 @@ describe('QueuePage', () => {
 
         const name = await screen.findByText('Test Print 1');
         const row = name.closest('.group') as HTMLElement;
-        const before = within(row).getByTestId('queue-item-eta').textContent;
+        const before = (await within(row).findByTestId('queue-item-eta')).textContent;
 
-        // The queue payload never changes, so react-query hands back the same
-        // object and nothing here re-renders on its own. Only the page's own
-        // clock can move this value.
+        // The forecast should refresh even when the queue payload is unchanged.
         await vi.advanceTimersByTimeAsync(45 * 60 * 1000);
 
         await waitFor(() => {
@@ -1316,7 +1305,7 @@ describe('QueuePage', () => {
       }
     });
 
-    it('shows one if-started-now ETA for a staged item', async () => {
+    it('omits a lone staged item from the forecast', async () => {
       server.use(
         http.get('/api/v1/queue/', () => {
           return HttpResponse.json([
@@ -1336,8 +1325,8 @@ describe('QueuePage', () => {
 
       expect(row).not.toBeNull();
       expect(
-        within(row as HTMLElement).getAllByTestId('queue-item-eta'),
-      ).toHaveLength(1);
+        within(row as HTMLElement).queryByTestId('queue-item-eta'),
+      ).not.toBeInTheDocument();
     });
 
     it('shows exactly one live ETA for a printing item', async () => {
@@ -1399,7 +1388,7 @@ describe('QueuePage', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('does not show an if-started-now ETA for a scheduled item', async () => {
+    it('forecasts a scheduled item', async () => {
       server.use(
         http.get('/api/v1/queue/', () => {
           return HttpResponse.json([
@@ -1421,8 +1410,8 @@ describe('QueuePage', () => {
 
       expect(row).not.toBeNull();
       expect(
-        within(row as HTMLElement).queryByTestId('queue-item-eta'),
-      ).not.toBeInTheDocument();
+        await within(row as HTMLElement).findByTestId('queue-item-eta'),
+      ).toBeInTheDocument();
     });
 
     it('tells an unscheduled item when it runs, without naming a dispatch mode', async () => {
