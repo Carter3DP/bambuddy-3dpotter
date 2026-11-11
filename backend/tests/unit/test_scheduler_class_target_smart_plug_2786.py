@@ -694,6 +694,39 @@ class TestFilamentIsCheckedBeforeSwitchingOn:
         assert item.waiting_reason == "No matching material/color. Waiting on PLA (Black)"
 
     @pytest.mark.asyncio
+    async def test_after_restart_waits_for_busy_matches_instead_of_waking_the_wrong_printer(self, queue_db):
+        from backend.app.services.bambu_mqtt import PrinterState
+        from backend.app.services.printer_manager import PrinterManager
+
+        await _add_printer(queue_db, 3)
+        await _add_plug(queue_db, 1)
+        item_id = await _add_item(queue_db, target_model="X1C", required_filament_types=["PETG"])
+
+        state = PrinterState()
+        state.connected = True
+        state.raw_data = _ams(_tray("PLA", "FFFFFFFF"))
+        with patch("backend.app.core.database.async_session", queue_db.session_maker):
+            await PrinterManager().save_last_known_trays(1, state)
+            restarted = PrinterManager()
+            await restarted.load_last_known_trays_from_db()
+
+        saved = restarted.last_known_trays(1)
+        assert saved["ams"][0]["tray"][0]["tray_type"] == "PLA"
+        scheduler = PrintScheduler()
+        with patch.object(scheduler, "_is_printer_idle", return_value=False):
+            power_on = await _run(
+                queue_db,
+                scheduler,
+                connected={2, 3},
+                statuses={2: _external("PETG", "FFFFFFFF"), 3: _external("PETG", "FFFFFFFF")},
+                remembered={1: saved},
+            )
+
+        power_on.assert_not_awaited()
+        item = await _get_item(queue_db, item_id)
+        assert item.waiting_reason == "Busy: X1C-2, X1C-3"
+
+    @pytest.mark.asyncio
     async def test_a_reading_kept_after_the_client_was_dropped_still_counts(self, queue_db):
         """Waking a printer replaces its client, which drops its status.
 

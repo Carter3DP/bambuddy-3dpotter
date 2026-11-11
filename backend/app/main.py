@@ -2140,6 +2140,7 @@ def _progress_milestone_to_notify(printer_id: int, state: PrinterState) -> int |
 
 async def on_printer_status_change(printer_id: int, state: PrinterState):
     """Handle printer status changes - broadcast via WebSocket."""
+    await printer_manager.save_last_known_trays(printer_id, state)
     try:
         notify_live_activities.observe(printer_id, state)
     except Exception:
@@ -12057,6 +12058,7 @@ async def lifespan(app: FastAPI):
 
     # Rehydrate persisted awaiting-plate-clear gate (#961) so prompts survive restarts
     await printer_manager.load_awaiting_plate_clear_from_db()
+    await printer_manager.load_last_known_trays_from_db()
 
     # Layer change callback for external camera timelapse
     async def on_layer_change(printer_id: int, layer_num: int):

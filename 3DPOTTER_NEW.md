@@ -24,6 +24,10 @@ Turning off Working Hours itself returns the queue to normal ordering.
 
 PostgreSQL upgrades now align the Working Hours manual-position default with fresh installs. Existing queue positions and manual placements are preserved.
 
+## Offline printer filament matching
+
+Bambuddy saves the last reported AMS and external spool filament for each printer across restarts. Model-based queue jobs use that reading to skip offline printers with incompatible filament, including when deciding which printer to wake with a smart plug. When a compatible printer is busy, the queue shows that printer instead of listing incompatible offline printers.
+
 ## Docker images
 
 The [Docker publishing workflow](.github/workflows/docker-publish.yml) builds `linux/amd64` and `linux/arm64` images for `ghcr.io/carter3dp/bambuddy-3dpotter`. It runs on pushes to `main`, version tags beginning with `v`, and manual runs. A manual run uses the selected branch name as a tag, with characters such as `/` replaced by `-`.
