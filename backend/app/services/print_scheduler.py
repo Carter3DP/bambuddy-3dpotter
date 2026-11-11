@@ -3517,6 +3517,7 @@ class PrintScheduler:
         printers_refused: list[str] = []
         printers_offline = []
         printers_offline_no_plug = []
+        offline_missing_filament: list[tuple[str, list[str]]] = []
         printers_missing_filament: list[tuple[str, list[str]]] = []
         candidates: list[tuple[int, int]] = []  # (printer_id, color_match_count)
         # The first eligible printer that is short on filament, kept in case
@@ -3555,7 +3556,7 @@ class PrintScheduler:
                     printer.id, required_filament_types, filament_overrides, color_match_threshold=color_match_threshold
                 )
                 if shortfall:
-                    printers_missing_filament.append((printer.name, shortfall))
+                    offline_missing_filament.append((printer.name, shortfall))
                 elif wakeable_ids is not None and printer.id not in wakeable_ids:
                     printers_offline_no_plug.append(printer.name)
                 else:
@@ -3672,6 +3673,11 @@ class PrintScheduler:
 
         if short_fallback is not None:
             return short_fallback, None
+
+        # A wrong-filament offline printer only matters when there is no
+        # compatible printer already in the running for this job.
+        if not (printers_busy or printers_refused or printers_offline or printers_offline_no_plug):
+            printers_missing_filament.extend(offline_missing_filament)
 
         # Build waiting reason from what we found
         reasons = []
@@ -3931,11 +3937,8 @@ class PrintScheduler:
 
         Empty means the printer may still be able to take the job.
 
-        Fails open, and deliberately: with no tray reading (never connected
-        since Bambuddy started, or the cache dropped by a reconnect) this
-        returns nothing to report and the printer is treated as it was before.
-        A farm restarted while its printers were off must not conclude that
-        none of them can print.
+        With no saved or live tray reading, leave the printer eligible so
+        newly added printers can be woken and report what they have loaded.
         """
         if not required_types and not filament_overrides:
             return []

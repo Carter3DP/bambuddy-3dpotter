@@ -496,6 +496,7 @@ class AppSettings(BaseModel):
         default=False,
         description="Shortest Job First — scheduler prioritizes shorter print jobs over longer ones",
     )
+    queue_forecast_gap_minutes: int = Field(default=5, ge=0, le=1440)
     queue_working_hours: WorkingHours = Field(default_factory=lambda: WorkingHours.from_storage(None))
     queue_max_concurrent_uploads: int = Field(
         default=4,
@@ -736,6 +737,13 @@ class AppSettings(BaseModel):
 
     @computed_field
     @property
+    def queue_working_hours_timezone(self) -> str:
+        from backend.app.utils.local_time import local_zone
+
+        return str(local_zone())
+
+    @computed_field
+    @property
     def queue_working_hours_active_until(self) -> datetime | None:
         return self.queue_working_hours.active_until(datetime.now(timezone.utc))
 
@@ -876,6 +884,7 @@ class AppSettingsUpdate(BaseModel):
     finance_budget_reset_timezone: str | None = None
     require_plate_clear: bool | None = None
     queue_shortest_first: bool | None = None
+    queue_forecast_gap_minutes: int | None = Field(default=None, ge=0, le=1440)
     queue_working_hours: WorkingHours | None = None
     queue_max_concurrent_uploads: int | None = Field(default=None, ge=1, le=16)
     preheat_enabled: bool | None = None

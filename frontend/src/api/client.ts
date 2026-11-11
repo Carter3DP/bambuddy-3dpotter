@@ -1597,6 +1597,8 @@ export interface AppSettings {
   require_plate_clear: boolean;
   // Shortest job first scheduling
   queue_shortest_first: boolean;
+  queue_forecast_gap_minutes?: number;
+  queue_working_hours_timezone?: string;
   queue_working_hours: { enabled: boolean; start: string; end: string; end_of_day?: WorkingHoursEndOfDay };
   queue_working_hours_active_until: string | null;
   queue_working_hours_next_opening: string | null;
@@ -1662,7 +1664,7 @@ export interface AppSettings {
 
 export type WorkingHoursEndOfDay = 'keep' | 'restore' | 'longest_first';
 
-export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured' | 'queue_working_hours_active_until' | 'queue_working_hours_next_opening'>>;
+export type AppSettingsUpdate = Partial<Omit<AppSettings, 'octoeverywhere_api_key_configured' | 'queue_working_hours_active_until' | 'queue_working_hours_next_opening' | 'queue_working_hours_timezone'>>;
 
 // Settings as a page sees them: everything from GET /settings for a user who
 // may read it, otherwise the subset /settings/ui-preferences and
@@ -2817,6 +2819,9 @@ export interface PrintQueueItem {
     filename: string;
     target_model: string;
     position: number;
+    print_time_seconds?: number | null;
+    required_filament_types?: PrintQueueItem['required_filament_types'];
+    filament_overrides?: PrintQueueItem['filament_overrides'];
   }>;
   // Either archive_id OR library_file_id must be set (archive created at print start)
   archive_id: number | null;

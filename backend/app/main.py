@@ -12057,6 +12057,7 @@ async def lifespan(app: FastAPI):
 
     # Rehydrate persisted awaiting-plate-clear gate (#961) so prompts survive restarts
     await printer_manager.load_awaiting_plate_clear_from_db()
+    await printer_manager.load_last_known_trays_from_db()
 
     # Layer change callback for external camera timelapse
     async def on_layer_change(printer_id: int, layer_num: int):

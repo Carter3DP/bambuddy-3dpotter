@@ -255,6 +255,7 @@ _INT_SETTING_KEYS = frozenset(
         "mqtt_port",
         "stagger_group_size",
         "stagger_interval_minutes",
+        "queue_forecast_gap_minutes",
         "forecast_global_lead_time_days",
         "location_sensor_poll_interval",
         "finance_budget_reset_day",
@@ -704,6 +705,8 @@ _UI_FLAG_FIELDS: tuple[str, ...] = (
     # centre picker and the print was then refused for lacking one).
     "queue_shortest_first",
     "queue_working_hours",
+    "queue_forecast_gap_minutes",
+    "queue_working_hours_timezone",
     "queue_working_hours_active_until",
     "queue_working_hours_next_opening",
     "use_slicer_api",

@@ -57,6 +57,13 @@ class TestSettingsAPI:
 
         assert (await async_client.get(route)).json()["color_match_threshold"] == 12
         assert (await async_client.get(route + "ui-flags")).json()["color_match_threshold"] == 12
+    async def test_queue_forecast_gap_round_trip(self, async_client: AsyncClient):
+        route = "/api/v1/settings/"
+        assert (await async_client.get(route)).json()["queue_forecast_gap_minutes"] == 5
+        response = await async_client.patch(route, json={"queue_forecast_gap_minutes": 0})
+        assert response.status_code == 200
+        assert (await async_client.get(route + "ui-flags")).json()["queue_forecast_gap_minutes"] == 0
+        assert (await async_client.patch(route, json={"queue_forecast_gap_minutes": -1})).status_code == 422
 
     @pytest.mark.integration
     async def test_working_hours_round_trip(self, async_client: AsyncClient):

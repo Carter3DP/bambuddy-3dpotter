@@ -9,15 +9,14 @@
 
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { forecastQueue } from '../../utils/queueForecast';
 import { QueueTimelineView } from '../../components/QueueTimelineView';
-import type { PrintQueueItem, Printer } from '../../api/client';
+import type { PrintQueueItem, Printer, PrinterStatus } from '../../api/client';
 
 const HOUR = 3600;
 
-const printers = [{ id: 1, name: 'Workshop X1C', model: 'X1C' }] as unknown as Printer[];
+const printers = [{ id: 1, name: 'Workshop X1C', model: 'X1C', is_active: true }] as unknown as Printer[];
 
-// Something has to be running for a lane to forecast at all: an idle printer's
-// ASAP queue has no committed anchor to chain from, so the view drops it.
 const running = {
   id: 100,
   printer_id: 1,
@@ -55,13 +54,17 @@ const queueItems = [
   pending(3, 'Medium job', 3, HOUR),
 ];
 
-function renderTimeline(sjfEnabled: boolean) {
-  render(
+const statuses = {
+  1: { connected: true, progress: 50, remaining_time: 30, state: 'RUNNING' } as PrinterStatus,
+};
+
+function renderTimeline(sjfEnabled: boolean, items = queueItems) {
+  return render(
     <QueueTimelineView
-      queueItems={queueItems}
+      queueItems={items}
       printers={printers}
-      printerStatuses={{ 1: { progress: 50, remaining_time: 30, state: 'RUNNING' } }}
-      sjfEnabled={sjfEnabled}
+      printerStatuses={statuses}
+      forecast={forecastQueue(items, printers, statuses, { queue_shortest_first: sjfEnabled }, Date.now())}
       onItemClick={() => {}}
       t={(key: string) => key}
     />,
@@ -86,29 +89,20 @@ describe('QueueTimelineView job ordering', () => {
     expect(barsLeftToRight()).toEqual(['Running now', 'Long job', 'Short job', 'Medium job']);
   });
 
-  it('chains shortest-first when SJF is on', () => {
+  it('starts the shortest job first and then shows the job it jumped', () => {
     renderTimeline(true);
-    expect(barsLeftToRight()).toEqual(['Running now', 'Short job', 'Medium job', 'Long job']);
+    expect(barsLeftToRight()).toEqual(['Running now', 'Short job', 'Long job', 'Medium job']);
   });
 
   it('keeps a jumped item ahead of a shorter one', () => {
     // The starvation guard is part of the scheduler's order too, so the
     // timeline has to draw it or it lies about the long job that is finally
     // about to run.
-    render(
-      <QueueTimelineView
-        queueItems={[
-          running,
-          pending(1, 'Short job', 1, HOUR / 2),
-          pending(2, 'Long job', 2, 2 * HOUR, { been_jumped: true }),
-        ]}
-        printers={printers}
-        printerStatuses={{ 1: { progress: 50, remaining_time: 30, state: 'RUNNING' } }}
-        sjfEnabled
-        onItemClick={() => {}}
-        t={(key: string) => key}
-      />,
-    );
+    renderTimeline(true, [
+      running,
+      pending(1, 'Short job', 1, HOUR / 2),
+      pending(2, 'Long job', 2, 2 * HOUR, { been_jumped: true }),
+    ]);
     // Position order would put the short job first, so this only passes if
     // been_jumped is actually consulted.
     expect(barsLeftToRight()).toEqual(['Running now', 'Long job', 'Short job']);
@@ -121,16 +115,7 @@ describe('QueueTimelineView and the scheduler waiting reasons (#3074)', () => {
    *  forecasts. Dropping every item that has a reason would empty the timeline
    *  for anyone whose queue is pinned to specific printers. */
   function renderWith(items: PrintQueueItem[]) {
-    render(
-      <QueueTimelineView
-        queueItems={items}
-        printers={printers}
-        printerStatuses={{ 1: { progress: 50, remaining_time: 30, state: 'RUNNING' } }}
-        sjfEnabled={false}
-        onItemClick={() => {}}
-        t={(key: string) => key}
-      />,
-    );
+    renderTimeline(false, items);
   }
 
   it('still forecasts an item that is only waiting its turn', () => {
@@ -156,16 +141,9 @@ describe('QueueTimelineView and the scheduler waiting reasons (#3074)', () => {
       'Waiting on Enclosure Door',
       'Waiting for filament: X1C-01 (needs PETG)',
     ]) {
-      const { unmount } = render(
-        <QueueTimelineView
-          queueItems={[running, pending(1, 'Long job', 1, 2 * HOUR, { waiting_reason: reason })]}
-          printers={printers}
-          printerStatuses={{ 1: { progress: 50, remaining_time: 30, state: 'RUNNING' } }}
-          sjfEnabled={false}
-          onItemClick={() => {}}
-          t={(key: string) => key}
-        />,
-      );
+      const { unmount } = renderTimeline(false, [
+        running, pending(1, 'Long job', 1, 2 * HOUR, { waiting_reason: reason }),
+      ]);
       expect(barsLeftToRight()).toEqual(['Running now']);
       unmount();
     }

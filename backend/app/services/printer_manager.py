@@ -4,8 +4,10 @@ import math
 import re
 import traceback
 from collections.abc import Callable
+from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
@@ -405,6 +407,7 @@ class PrinterManager:
         # now", and the two must not be confused by anything that displays or
         # merges live status.
         self._last_trays: dict[int, dict] = {}
+        self._tray_save_lock = asyncio.Lock()
         self._on_print_start: Callable[[int, dict], None] | None = None
         self._on_print_complete: Callable[[int, dict], None] | None = None
         self._on_print_running_observed: Callable[[int, dict], None] | None = None
@@ -779,6 +782,58 @@ class PrinterManager:
         """
         return self._last_trays.get(printer_id, {})
 
+    async def load_last_known_trays_from_db(self) -> None:
+        """Restore offline filament history before connecting to printers."""
+        from backend.app.core.database import async_session
+
+        async with async_session() as db:
+            result = await db.execute(
+                select(Printer.id, Printer.last_known_trays).where(Printer.last_known_trays.is_not(None))
+            )
+            self._last_trays.update((printer_id, trays) for printer_id, trays in result if trays)
+
+    async def save_last_known_trays(self, printer_id: int, state: PrinterState) -> None:
+        """Persist changes to the filament fields used for offline matching."""
+        if not state.connected:
+            return
+
+        def filament_fields(trays: list[dict]) -> list[dict]:
+            return [
+                {key: tray.get(key) for key in ("tray_type", "tray_color", "tray_info_idx")}
+                for tray in trays
+                if tray.get("tray_type")
+            ]
+
+        raw = state.raw_data or {}
+        ams_trays = [tray for unit in raw.get("ams") or [] for tray in filament_fields(unit.get("tray") or [])]
+        external_trays = filament_fields(raw.get("vt_tray") or [])
+        # An incomplete startup or shutdown report can contain no tray data.
+        # Keep the last useful reading until the printer reports filament again.
+        if not ams_trays and not external_trays:
+            return
+
+        snapshot = {"ams": [{"tray": ams_trays}] if ams_trays else [], "vt_tray": external_trays}
+        if snapshot == self._last_trays.get(printer_id):
+            return
+
+        from backend.app.core.database import async_session
+
+        try:
+            async with self._tray_save_lock:
+                if snapshot == self._last_trays.get(printer_id):
+                    return
+                async with async_session() as db:
+                    result = await db.execute(
+                        update(Printer)
+                        .where(Printer.id == printer_id)
+                        .values(last_known_trays=snapshot, updated_at=Printer.updated_at)
+                    )
+                    await db.commit()
+                    if cast(CursorResult, result).rowcount:
+                        self._last_trays[printer_id] = snapshot
+        except Exception:
+            logger.exception("Could not save last-known filament for printer %s", printer_id)
+
     def _remember_trays(self, printer_id: int) -> None:
         """Keep the tray reading of a client that is about to be dropped."""
         client = self._clients.get(printer_id)
@@ -786,7 +841,9 @@ class PrinterManager:
             return
         raw = client.state.raw_data or {}
         remembered = {key: raw[key] for key in ("ams", "vt_tray") if raw.get(key)}
-        if remembered:
+        if any(tray.get("tray_type") for unit in remembered.get("ams", []) for tray in unit.get("tray", [])) or any(
+            tray.get("tray_type") for tray in remembered.get("vt_tray", [])
+        ):
             self._last_trays[printer_id] = remembered
 
     async def connect_printer(self, printer: Printer) -> bool:
@@ -797,6 +854,8 @@ class PrinterManager:
         printer_id = printer.id
 
         def on_state_change(state: PrinterState):
+            if state.connected:
+                self._schedule_async(self.save_last_known_trays(printer_id, state))
             if self._on_status_change:
                 self._schedule_async(self._on_status_change(printer_id, state))
 

@@ -1,5 +1,5 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, Clock, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Pencil, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud, MonitorPlay, Info } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, Clock, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Pencil, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud, MonitorPlay, Info, Timer } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -95,6 +95,7 @@ registerSettingsSearch({ labelKey: 'settings.providers', tab: 'notifications', k
 registerSettingsSearch({ labelKey: 'settings.messageTemplates', tab: 'notifications', keywords: 'message templates notification text edit', anchor: 'card-templates' });
 registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback: 'Default Print Options', tab: 'queue', keywords: 'print bed leveling flow calibration vibration first layer timelapse color match threshold tolerance', anchor: 'card-print-options' });
 registerSettingsSearch({ labelKey: 'settings.tempFanPresetsTitle', labelFallback: 'Temperature & Fan Presets', tab: 'queue', keywords: 'temperature fan presets nozzle bed chamber quick buttons popover', anchor: 'card-temp-fan-presets' });
+registerSettingsSearch({ labelKey: 'settings.queueForecast', labelFallback: 'Queue Forecast', tab: 'queue', keywords: 'eta estimate completion turnaround gap minutes time between prints', anchor: 'card-queue-forecast' });
 registerSettingsSearch({ labelKey: 'settings.staggeredStart', labelFallback: 'Staggered Start', tab: 'queue', keywords: 'staggered batch delay start queue group', anchor: 'card-staggered' });
 registerSettingsSearch({ labelKey: 'settings.plateClear', labelFallback: 'Plate-Clear Confirmation', tab: 'queue', keywords: 'plate clear confirm auto queue', anchor: 'card-plate' });
 registerSettingsSearch({ labelKey: 'settings.workingHoursTitle', labelFallback: 'Working Hours', tab: 'queue', keywords: 'working hours shift cutoff shortest print schedule dispatch queue farm', anchor: 'card-working-hours' });
@@ -1374,6 +1375,7 @@ export function SettingsPage() {
       (baseline.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
       (baseline.preheat_soak_seconds ?? 300) !== (localSettings.preheat_soak_seconds ?? 300) ||
       (baseline.queue_keep_bed_warm ?? false) !== (localSettings.queue_keep_bed_warm ?? false) ||
+      (baseline.queue_forecast_gap_minutes ?? 5) !== (localSettings.queue_forecast_gap_minutes ?? 5) ||
       (baseline.queue_keep_warm_bed_temp ?? 90) !== (localSettings.queue_keep_warm_bed_temp ?? 90) ||
       (baseline.queue_keep_warm_max_minutes ?? 120) !== (localSettings.queue_keep_warm_max_minutes ?? 120) ||
       (baseline.nozzle_temp_presets ?? '') !== (localSettings.nozzle_temp_presets ?? '') ||
@@ -1498,6 +1500,7 @@ export function SettingsPage() {
         stagger_group_size: localSettings.stagger_group_size,
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         require_plate_clear: localSettings.require_plate_clear,
+        queue_forecast_gap_minutes: localSettings.queue_forecast_gap_minutes,
         queue_working_hours: workingHoursChanged ? editedHours : undefined,
         queue_max_concurrent_uploads: localSettings.queue_max_concurrent_uploads,
         preheat_enabled: localSettings.preheat_enabled,
@@ -5503,6 +5506,32 @@ export function SettingsPage() {
                   </p>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card id="card-queue-forecast">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Timer className="w-4 h-4 text-bambu-green" />
+                {t('settings.queueForecast', 'Queue Forecast')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <label htmlFor="queue-forecast-gap" className="block text-sm text-white">
+                {t('settings.queueForecastGap', 'Time between prints (minutes)')}
+              </label>
+              <NumberInput
+                id="queue-forecast-gap"
+                min={0}
+                max={1440}
+                fallback={5}
+                value={localSettings.queue_forecast_gap_minutes ?? 5}
+                onChange={(value) => updateSetting('queue_forecast_gap_minutes', value)}
+                className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm"
+              />
+              <p className="text-xs text-bambu-gray">
+                {t('settings.queueForecastGapHelp', 'Allow time for plate clearing and setup in the queue forecast. The scheduler still starts jobs as soon as they are eligible.')}
+              </p>
             </CardContent>
           </Card>
 

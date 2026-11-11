@@ -94,6 +94,16 @@ router = APIRouter(prefix="/queue", tags=["queue"])
 _AWAITING_REVIEW = "This job waits for review: someone who can manage all queue jobs has to start it"
 
 
+def _parse_json_list(value: str | None) -> list | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
 def _variant_summaries(item: PrintQueueItem) -> list[QueueVariantSummary]:
     """Cross-model candidates for display (#671), or [] if they weren't loaded.
 
@@ -110,6 +120,9 @@ def _variant_summaries(item: PrintQueueItem) -> list[QueueVariantSummary]:
             filename=v.library_file.filename if v.library_file else "",
             target_model=v.target_model,
             position=v.position,
+            print_time_seconds=v.print_time_seconds,
+            required_filament_types=_parse_json_list(v.required_filament_types),
+            filament_overrides=_parse_json_list(v.filament_overrides),
         )
         for v in item.variants
     ]
