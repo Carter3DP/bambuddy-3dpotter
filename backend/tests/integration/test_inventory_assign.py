@@ -2568,3 +2568,33 @@ class TestSpoolmanSlotAssignmentDuringRunout:
 
         db_session.expunge_all()
         assert await db_session.get(SpoolmanSlotAssignment, row_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_assignment_reports_zero_during_runout_pause(async_client, db_session, printer_factory, spool_factory):
+    from backend.app.models.spool_assignment import SpoolAssignment
+    from backend.app.services.bambu_mqtt import PrinterState
+    from backend.app.services.spool_swaps import INVENTORY, entry
+
+    printer = await printer_factory()
+    spool = await spool_factory(weight_used=982)
+    db_session.add(SpoolAssignment(printer_id=printer.id, spool_id=spool.id, ams_id=0, tray_id=0))
+    await db_session.commit()
+
+    state = PrinterState(state="PAUSE", stg_cur=6, last_loaded_tray=0, layer_num=57)
+    with patch(
+        "backend.app.services.printer_manager.printer_manager.get_all_statuses", return_value={printer.id: state}
+    ):
+        response = await async_client.get("/api/v1/inventory/assignments", params={"printer_id": printer.id})
+        assert response.status_code == 200
+        assert response.json()[0]["spool"]["weight_used"] == 1000
+
+        replacement = entry(INVENTORY, 0, 0, spool.id, 57)
+        replacement["runout_spool"] = spool.id + 1
+        state.spool_change_log = [replacement]
+        response = await async_client.get("/api/v1/inventory/assignments", params={"printer_id": printer.id})
+        assert response.json()[0]["spool"]["weight_used"] == 982
+
+    await db_session.refresh(spool)
+    assert spool.weight_used == 982

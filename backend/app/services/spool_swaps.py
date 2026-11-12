@@ -283,6 +283,29 @@ def _on_commit(db, apply) -> None:
     event.listen(sync, "after_rollback", rolled_back, once=True)
 
 
+def is_runout_tray(state, ams_id: int, tray_id: int) -> bool:
+    """Whether this slot is the feed that paused for filament runout."""
+    if getattr(state, "state", None) != "PAUSE" or getattr(state, "stg_cur", None) != 6:
+        return False
+    global_tray = 254 + tray_id if ams_id == 255 else ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+    feeding_tray = getattr(state, "last_loaded_tray", -1)
+    if feeding_tray == -1:
+        feeding_tray = getattr(state, "tray_now", -1)
+    return feeding_tray == global_tray
+
+
+def inventory_assignment_is_empty(state, ams_id: int, tray_id: int, spool_id: int) -> bool:
+    """Report the outgoing spool as empty while waiting for its replacement."""
+    if not is_runout_tray(state, ams_id, tray_id):
+        return False
+    assignments = _tray_assignments(getattr(state, "spool_change_log", None), INVENTORY, ams_id, tray_id)
+    # The printer can stay paused after the replacement has been assigned.
+    return not any(
+        item["spool"] == spool_id and "runout_spool" in item and item["layer"] == getattr(state, "layer_num", 0)
+        for item in assignments[-1:]
+    )
+
+
 async def record_assignment(db, printer_id: int, ams_id: int, tray_id: int, spool_id: int, backend: str) -> None:
     """Note that ``spool_id`` was assigned to a tray, if that printer is printing.
 
@@ -314,18 +337,7 @@ async def record_assignment(db, printer_id: int, ams_id: int, tray_id: int, spoo
             return
         layer = int(getattr(state, "layer_num", 0) or 0)
         replacement = entry(backend, ams_id, tray_id, spool_id, layer)
-        global_tray = 254 + tray_id if ams_id == 255 else ams_id if ams_id >= 128 else ams_id * 4 + tray_id
-        feeding_tray = getattr(state, "last_loaded_tray", -1)
-        if feeding_tray == -1:
-            feeding_tray = getattr(state, "tray_now", -1)
-        # Stage 6 is the firmware's filament-runout pause. Other pauses
-        # (including deliberate colour changes) keep the per-layer split.
-        if (
-            same_tray
-            and getattr(state, "state", None) == "PAUSE"
-            and getattr(state, "stg_cur", None) == 6
-            and feeding_tray == global_tray
-        ):
+        if same_tray and is_runout_tray(state, ams_id, tray_id):
             outgoing_id = same_tray[-1]["spool"]
             replacement["runout_spool"] = outgoing_id
             if backend == INVENTORY:

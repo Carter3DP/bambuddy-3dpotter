@@ -2357,6 +2357,7 @@ async def list_assignments(
     printer_scope: PrinterScope = RequestPrinterScope,
 ):
     """List spool assignments, optionally filtered by printer."""
+    from backend.app.services import spool_swaps
     from backend.app.services.printer_manager import printer_manager
 
     query = select(SpoolAssignment).options(
@@ -2404,6 +2405,12 @@ async def list_assignments(
     responses: list[SpoolAssignmentResponse] = []
     for a in assignments:
         resp = SpoolAssignmentResponse.model_validate(a)
+        if resp.spool and spool_swaps.inventory_assignment_is_empty(
+            all_statuses.get(a.printer_id), a.ams_id, a.tray_id, a.spool_id
+        ):
+            # Only adjust the response. Assignment logging still needs the
+            # stored balance to split the print's usage at completion.
+            resp.spool.weight_used = max(resp.spool.weight_used, resp.spool.label_weight)
         sn = serial_map.get((a.printer_id, a.ams_id))
         if sn and sn in label_by_serial:
             resp.ams_label = label_by_serial[sn]
