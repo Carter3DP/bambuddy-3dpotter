@@ -33,7 +33,7 @@ Bambuddy saves the last reported AMS and external spool filament for each printe
 
 ## Runout spool accounting
 
-When you assign a tracked replacement to the same tray during a confirmed filament-runout pause, Bambuddy charges the outgoing spool up to its tracked remaining weight. The replacement takes the balance of the print usage. Built-in inventory and Spoolman both support this. Ordinary swaps and runouts without a known remaining weight use the existing layer-based split.
+When you assign a tracked replacement to the same tray during a confirmed filament-runout pause, Bambuddy charges the outgoing spool up to its tracked remaining weight. The replacement takes the balance of the print usage. Built-in inventory and Spoolman both support this. Ordinary swaps and runouts without a known remaining weight use the existing layer-based split. When the print finishes, confirmed runout spools in built-in inventory report zero grams remaining, even if the print estimate charged fewer grams. This inventory correction is separate from the print’s recorded usage.
 
 ## Docker images
 

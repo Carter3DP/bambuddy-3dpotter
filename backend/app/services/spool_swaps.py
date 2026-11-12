@@ -55,6 +55,15 @@ def _valid(item) -> bool:
     return isinstance(item, dict) and {"backend", "ams", "tray", "spool", "layer"} <= item.keys()
 
 
+def depleted_inventory_spools(log: list | None) -> set[int]:
+    """Built-in inventory spools confirmed empty by a runout replacement."""
+    return {
+        item["runout_spool"]
+        for item in log or []
+        if _valid(item) and item["backend"] == INVENTORY and type(item.get("runout_spool")) is int
+    }
+
+
 def _tray_assignments(log: list | None, backend: str, ams_id: int, tray_id: int) -> list[dict]:
     result: list[dict] = []
     for item in log or []:

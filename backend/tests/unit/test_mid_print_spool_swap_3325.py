@@ -590,3 +590,33 @@ class TestBuiltInRemainDelta:
     async def test_a_tray_that_kept_its_spool_still_is(self):
         results = await self._complete(_log(start=2, key=(0, 0)))
         assert [(r["spool_id"], r["weight_used"]) for r in results] == [(2, 100.0)]
+
+
+@pytest.mark.asyncio
+async def test_completion_marks_confirmed_runout_empty_without_inflating_usage(db_session, printer_factory):
+    from backend.app.services.usage_tracker import PrintSession, _active_sessions, on_print_complete
+
+    printer = await printer_factory()
+    outgoing = Spool(material="PLA", label_weight=1000, weight_used=970)
+    ordinary_swap = Spool(material="PLA", label_weight=1000, weight_used=970)
+    db_session.add_all([outgoing, ordinary_swap])
+    await db_session.commit()
+    runout = _log((99, 50), start=outgoing.id, key=(0, 0))
+    runout[-1].update(runout_spool=outgoing.id, runout_remaining_g=80.0)
+    log = runout + _log((100, 50), start=ordinary_swap.id, key=(0, 1))
+    manager = MagicMock()
+    manager.get_status.return_value = SimpleNamespace(raw_data={}, spool_change_log=log)
+    _active_sessions[printer.id] = PrintSession(
+        printer_id=printer.id, print_name="Test", started_at=datetime.now(timezone.utc), tray_remain_start={}
+    )
+
+    with (
+        patch("backend.app.services.usage_tracker._find_3mf_by_filename", return_value=None),
+        patch("backend.app.services.print_cost_estimate.default_cost_per_kg", return_value=0),
+    ):
+        assert await on_print_complete(printer.id, {"status": "completed"}, manager, db_session) == []
+
+    await db_session.refresh(outgoing)
+    await db_session.refresh(ordinary_swap)
+    assert max(0.0, outgoing.label_weight - outgoing.weight_used) == 0.0
+    assert ordinary_swap.weight_used == 970

@@ -1128,7 +1128,20 @@ async def on_print_complete(
                     status,
                 )
 
-    if results:
+    # The slicer estimate can be smaller than the outgoing spool's tracked
+    # balance. Keep the print's usage split capped at its total, and reconcile
+    # the confirmed empty spool separately so inventory reports zero grams.
+    swap_log = getattr(state, "spool_change_log", None) if state is not None else None
+    if swap_log is None and session is not None:
+        swap_log = await get_persisted_spool_change_log(db, printer_id)
+    depleted = spool_swaps.depleted_inventory_spools(swap_log)
+    if depleted:
+        await db.execute(
+            update(Spool)
+            .where(Spool.id.in_(depleted), Spool.weight_used < Spool.label_weight)
+            .values(weight_used=Spool.label_weight)
+        )
+    if results or depleted:
         await db.commit()
 
     # --- Update PrintArchive.cost from THIS print session only ---
