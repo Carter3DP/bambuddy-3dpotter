@@ -75,6 +75,19 @@ describe('SettingsPage fields that were never saved', () => {
     await waitFor(() => expect(saves.at(-1)).toMatchObject({ pipeline_max_copies: 200 }), { timeout: 3000 });
   });
 
+  it('puts the color threshold and lowest-weight spool toggle last and saves the toggle', async () => {
+    const user = await open('Workflow');
+    const toggle = await screen.findByRole('checkbox', { name: 'Prefer lowest-weight AMS spool' });
+    const threshold = screen.getByLabelText('Color match threshold (%)');
+    const options = toggle.closest('#card-print-options');
+    const inputs = Array.from(options?.querySelectorAll('input') ?? []);
+    expect(inputs.slice(-2)).toEqual([threshold, toggle]);
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await waitFor(() => expect(saves.at(-1)).toMatchObject({ prefer_lighter_slicer_spools: true }), { timeout: 3000 });
+  });
+
   it('saves the Docker compose directory', async () => {
     const user = await open();
 

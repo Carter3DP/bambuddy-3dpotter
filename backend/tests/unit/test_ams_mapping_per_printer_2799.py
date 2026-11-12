@@ -866,26 +866,28 @@ class TestMissingFilamentForStart:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("weights", "has_ams", "backup", "saved_mapping", "candidate_overrides", "expected"),
+    ("weights", "has_ams", "backup", "saved_mapping", "candidate_overrides", "enabled", "expected"),
     [
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, [2]),
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_color": "FF0000FF"}, [1]),
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_info_idx": "other"}, [1]),
-        ({0: 300, 1: 100, 2: 0}, True, True, [0], {}, [1]),
-        ({0: 300, 1: 300}, True, True, [0], {}, [0]),
-        ({1: 100, 2: 50}, True, True, [0], {}, [0]),
-        ({0: 300, 1: 100}, True, False, [0], {}, [0]),
-        ({0: 300, 1: 100}, False, True, [0], {}, [0]),
-        ({0: 300, 1: 100}, True, True, [2], {}, [0]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, True, [2]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, False, [0]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_color": "FF0000FF"}, True, [1]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_info_idx": "other"}, True, [1]),
+        ({0: 300, 1: 100, 2: 0}, True, True, [0], {}, True, [1]),
+        ({0: 300, 1: 300}, True, True, [0], {}, True, [0]),
+        ({1: 100, 2: 50}, True, True, [0], {}, True, [0]),
+        ({0: 300, 1: 100}, True, False, [0], {}, True, [0]),
+        ({0: 300, 1: 100}, False, True, [0], {}, True, [0]),
+        ({0: 300, 1: 100}, True, True, [2], {}, True, [0]),
     ],
 )
 async def test_saved_slicer_pick_prefers_lighter_equivalent_ams_spool(
-    weights, has_ams, backup, saved_mapping, candidate_overrides, expected
+    weights, has_ams, backup, saved_mapping, candidate_overrides, enabled, expected
 ):
     from backend.app.services.bambu_mqtt import PrinterState
 
     scheduler = PrintScheduler()
     scheduler._get_filament_requirements = AsyncMock(return_value=[{"slot_id": 1, "type": "PLA"}])
+    scheduler._get_bool_setting = AsyncMock(return_value=enabled)
     scheduler._build_inventory_remain_overrides = AsyncMock(return_value=weights)
     status = PrinterState()
     status.ams_filament_backup = backup
@@ -902,5 +904,5 @@ async def test_saved_slicer_pick_prefers_lighter_equivalent_ams_spool(
 
     assert json.loads(item.ams_mapping) == expected
     assert db.commit.await_count == int(expected != [0])
-    if not has_ams or not backup or saved_mapping != [0]:
+    if not enabled or not has_ams or not backup or saved_mapping != [0]:
         scheduler._build_inventory_remain_overrides.assert_not_awaited()

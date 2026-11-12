@@ -1573,6 +1573,7 @@ export interface AppSettings {
   user_notifications_enabled: boolean;
   // Default print options
   color_match_threshold: number;
+  prefer_lighter_slicer_spools: boolean;
   default_bed_levelling: CalibrationMode;
   default_flow_cali: CalibrationMode;
   default_vibration_cali: boolean;

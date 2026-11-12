@@ -37,7 +37,7 @@ A virtual printer linked to one physical printer reports its last saved AMS and 
 
 ## Lowest remaining spool for slicer mappings
 
-For queued prints using a saved slicer AMS mapping, Bambuddy checks live AMS slots before dispatch. It can substitute a lighter spool with the same material, colour and filament profile when both spools have known remaining weights from Bambuddy inventory or Spoolman. It keeps the slicer's pick when it cannot compare weights or when AMS Filament Backup is explicitly off. External spool picks keep their existing behaviour.
+Enable **Workflow → Default Print Options → Prefer lowest-weight AMS spool** to check live AMS slots before dispatching a queued print that uses a saved slicer AMS mapping. The toggle defaults to off, which keeps the slicer’s selection. It can substitute a lighter spool with the same material, colour and filament profile when both spools have known remaining weights from Bambuddy inventory or Spoolman. It keeps the slicer's pick when it cannot compare weights or when AMS Filament Backup is explicitly off. External spool picks keep their existing behaviour.
 
 ## Docker images
 

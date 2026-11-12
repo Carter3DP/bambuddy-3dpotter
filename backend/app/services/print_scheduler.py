@@ -4153,6 +4153,9 @@ class PrintScheduler:
         if status is None or not status.raw_data.get("ams") or getattr(status, "ams_filament_backup", None) is False:
             return None
 
+        if not await self._get_bool_setting(db, "prefer_lighter_slicer_spools"):
+            return None
+
         # Only reconsider the saved slicer mapping for this printer. Mappings
         # explicitly edited in the queue retain their existing behaviour.
         archive = await db.get(PrintArchive, item.archive_id)

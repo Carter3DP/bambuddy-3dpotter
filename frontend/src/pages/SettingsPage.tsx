@@ -93,7 +93,7 @@ registerSettingsSearch({ labelKey: 'haSensors.sectionTitle', tab: 'sensors', key
 registerSettingsSearch({ labelKey: 'locationHaSensors.sectionTitle', tab: 'sensors', keywords: 'home assistant sensor location storage box temperature humidity battery alert notify', anchor: 'card-location-sensors' });
 registerSettingsSearch({ labelKey: 'settings.providers', tab: 'notifications', keywords: 'telegram discord email notification providers webhook', anchor: 'card-providers' });
 registerSettingsSearch({ labelKey: 'settings.messageTemplates', tab: 'notifications', keywords: 'message templates notification text edit', anchor: 'card-templates' });
-registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback: 'Default Print Options', tab: 'queue', keywords: 'print bed leveling flow calibration vibration first layer timelapse color match threshold tolerance', anchor: 'card-print-options' });
+registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback: 'Default Print Options', tab: 'queue', keywords: 'print bed leveling flow calibration vibration first layer timelapse color match threshold tolerance lowest weight remaining filament spool slicer AMS', anchor: 'card-print-options' });
 registerSettingsSearch({ labelKey: 'settings.tempFanPresetsTitle', labelFallback: 'Temperature & Fan Presets', tab: 'queue', keywords: 'temperature fan presets nozzle bed chamber quick buttons popover', anchor: 'card-temp-fan-presets' });
 registerSettingsSearch({ labelKey: 'settings.queueForecast', labelFallback: 'Queue Forecast', tab: 'queue', keywords: 'eta estimate completion turnaround gap minutes time between prints', anchor: 'card-queue-forecast' });
 registerSettingsSearch({ labelKey: 'settings.staggeredStart', labelFallback: 'Staggered Start', tab: 'queue', keywords: 'staggered batch delay start queue group', anchor: 'card-staggered' });
@@ -1355,6 +1355,7 @@ export function SettingsPage() {
       baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
       baseline.prometheus_token !== localSettings.prometheus_token ||
       (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true) ||
+      (baseline.prefer_lighter_slicer_spools ?? false) !== (localSettings.prefer_lighter_slicer_spools ?? false) ||
       (baseline.color_match_threshold ?? 0) !== (localSettings.color_match_threshold ?? 0) ||
       (baseline.default_bed_levelling ?? 'auto') !== (localSettings.default_bed_levelling ?? 'auto') ||
       (baseline.default_flow_cali ?? 'auto') !== (localSettings.default_flow_cali ?? 'auto') ||
@@ -1488,6 +1489,7 @@ export function SettingsPage() {
         prometheus_token: localSettings.prometheus_token,
         user_notifications_enabled: localSettings.user_notifications_enabled,
         color_match_threshold: localSettings.color_match_threshold,
+        prefer_lighter_slicer_spools: localSettings.prefer_lighter_slicer_spools ?? false,
         default_bed_levelling: localSettings.default_bed_levelling,
         default_flow_cali: localSettings.default_flow_cali,
         default_vibration_cali: localSettings.default_vibration_cali,
@@ -5295,6 +5297,27 @@ export function SettingsPage() {
                   )}
                 </div>
               ))}
+              {/* Prints Bambuddy only archived, never dispatched, carry no
+                  queue item to read the ask-for-outcome flag from (#1898). */}
+              <div className="flex items-center justify-between">
+                <div className="flex-1 mr-4">
+                  <p className="text-sm text-white">
+                    {t('settings.confirmOutcomeExternalPrints', 'Also ask for prints started outside Bambuddy')}
+                  </p>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.confirmOutcomeExternalPrintsDesc', 'Prints started at the printer, in Bambu Studio or in the Handy app are archived by Bambuddy too. With this on, they get the same outcome prompt as queued prints.')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.confirm_outcome_external_prints ?? false}
+                    onChange={(e) => updateSetting('confirm_outcome_external_prints', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <label htmlFor="color-match-threshold" className="text-sm text-white">
@@ -5315,22 +5338,22 @@ export function SettingsPage() {
                   className="w-24 shrink-0 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
                 />
               </div>
-              {/* Prints Bambuddy only archived, never dispatched, carry no
-                  queue item to read the ask-for-outcome flag from (#1898). */}
-              <div className="flex items-center justify-between">
-                <div className="flex-1 mr-4">
-                  <p className="text-sm text-white">
-                    {t('settings.confirmOutcomeExternalPrints', 'Also ask for prints started outside Bambuddy')}
-                  </p>
-                  <p className="text-xs text-bambu-gray mt-0.5">
-                    {t('settings.confirmOutcomeExternalPrintsDesc', 'Prints started at the printer, in Bambu Studio or in the Handy app are archived by Bambuddy too. With this on, they get the same outcome prompt as queued prints.')}
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label htmlFor="prefer-lighter-slicer-spools" className="text-sm text-white">
+                    {t('settings.preferLighterSlicerSpools', 'Prefer lowest-weight AMS spool')}
+                  </label>
+                  <p id="prefer-lighter-slicer-spools-help" className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.preferLighterSlicerSpoolsHelp', 'For queued prints with a saved slicer selection, use an equivalent AMS spool with less filament remaining when both weights are known. Turn this off to keep the slicer selection.')}
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer shrink-0">
                   <input
+                    id="prefer-lighter-slicer-spools"
+                    aria-describedby="prefer-lighter-slicer-spools-help"
                     type="checkbox"
-                    checked={localSettings.confirm_outcome_external_prints ?? false}
-                    onChange={(e) => updateSetting('confirm_outcome_external_prints', e.target.checked)}
+                    checked={localSettings.prefer_lighter_slicer_spools ?? false}
+                    onChange={(e) => updateSetting('prefer_lighter_slicer_spools', e.target.checked)}
                     className="sr-only peer"
                   />
                   <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

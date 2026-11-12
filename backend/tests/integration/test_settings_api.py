@@ -44,6 +44,16 @@ class TestSettingsAPI:
         assert isinstance(result["currency"], str)
 
     @pytest.mark.integration
+    async def test_prefer_lighter_slicer_spools_round_trip(self, async_client: AsyncClient):
+        route = "/api/v1/settings/"
+        assert (await async_client.get(route)).json()["prefer_lighter_slicer_spools"] is False
+
+        for enabled in (True, False):
+            response = await async_client.put(route, json={"prefer_lighter_slicer_spools": enabled})
+            assert response.status_code == 200
+            assert (await async_client.get(route)).json()["prefer_lighter_slicer_spools"] is enabled
+
+    @pytest.mark.integration
     async def test_color_match_threshold_round_trip(self, async_client: AsyncClient):
         route = "/api/v1/settings/"
         assert (await async_client.get(route)).json()["color_match_threshold"] == 0

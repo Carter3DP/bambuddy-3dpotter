@@ -427,6 +427,9 @@ class AppSettings(BaseModel):
     color_match_threshold: int = Field(
         default=0, ge=0, le=100, description="Maximum RGB channel difference as a percentage for forced color matches"
     )
+    prefer_lighter_slicer_spools: bool = Field(
+        default=False, description="Prefer a lighter equivalent AMS spool over a saved slicer selection"
+    )
     default_bed_levelling: TriState = Field(default="auto", description="Default bed levelling option for new prints")
     default_flow_cali: TriState = Field(default="auto", description="Default flow calibration option for new prints")
     default_vibration_cali: bool = Field(
@@ -867,6 +870,7 @@ class AppSettingsUpdate(BaseModel):
     session_max_hours: int | None = Field(default=None, ge=1, le=720)
     user_notifications_enabled: bool | None = None
     color_match_threshold: int | None = Field(default=None, ge=0, le=100)
+    prefer_lighter_slicer_spools: bool | None = None
     default_bed_levelling: TriState | None = None
     default_flow_cali: TriState | None = None
     default_vibration_cali: bool | None = None
