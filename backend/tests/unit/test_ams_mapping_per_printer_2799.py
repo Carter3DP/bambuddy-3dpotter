@@ -862,3 +862,45 @@ class TestMissingFilamentForStart:
         with patch("backend.app.services.print_scheduler.printer_manager") as pm:
             pm.get_status.return_value = None
             assert await scheduler.missing_filament_for_start(AsyncMock(), item) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("weights", "has_ams", "backup", "saved_mapping", "candidate_overrides", "expected"),
+    [
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, [2]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_color": "FF0000FF"}, [1]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_info_idx": "other"}, [1]),
+        ({0: 300, 1: 100, 2: 0}, True, True, [0], {}, [1]),
+        ({0: 300, 1: 300}, True, True, [0], {}, [0]),
+        ({1: 100, 2: 50}, True, True, [0], {}, [0]),
+        ({0: 300, 1: 100}, True, False, [0], {}, [0]),
+        ({0: 300, 1: 100}, False, True, [0], {}, [0]),
+        ({0: 300, 1: 100}, True, True, [2], {}, [0]),
+    ],
+)
+async def test_saved_slicer_pick_prefers_lighter_equivalent_ams_spool(
+    weights, has_ams, backup, saved_mapping, candidate_overrides, expected
+):
+    from backend.app.services.bambu_mqtt import PrinterState
+
+    scheduler = PrintScheduler()
+    scheduler._get_filament_requirements = AsyncMock(return_value=[{"slot_id": 1, "type": "PLA"}])
+    scheduler._build_inventory_remain_overrides = AsyncMock(return_value=weights)
+    status = PrinterState()
+    status.ams_filament_backup = backup
+    trays = [{"id": str(i), "tray_type": "PLA", "tray_color": "010203FF", "tray_info_idx": "profile"} for i in range(3)]
+    trays[2].update(candidate_overrides)
+    status.raw_data = {"ams": [{"id": "0", "tray": trays}] if has_ams else []}
+    db = AsyncMock()
+    db.get.return_value.extra_data = {"slicer_ams_mapping": {"printer_id": 8, "mapping": saved_mapping}}
+    item = _item(archive_id=12, ams_mapping="[0]")
+
+    with patch("backend.app.services.print_scheduler.printer_manager") as pm:
+        pm.get_status.return_value = status
+        await scheduler._ensure_ams_mapping(db, 8, item)
+
+    assert json.loads(item.ams_mapping) == expected
+    assert db.commit.await_count == int(expected != [0])
+    if not has_ams or not backup or saved_mapping != [0]:
+        scheduler._build_inventory_remain_overrides.assert_not_awaited()

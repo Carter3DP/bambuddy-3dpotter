@@ -35,6 +35,10 @@ Bambuddy saves the last reported AMS and external spool filament for each printe
 
 A virtual printer linked to one physical printer reports its last saved AMS and external spool layout to slicers when that printer is offline. The printer must have reported its trays after this update so the snapshot includes slot IDs.
 
+## Lowest remaining spool for slicer mappings
+
+For queued prints using a saved slicer AMS mapping, Bambuddy checks live AMS slots before dispatch. It can substitute a lighter spool with the same material, colour and filament profile when both spools have known remaining weights from Bambuddy inventory or Spoolman. It keeps the slicer's pick when it cannot compare weights or when AMS Filament Backup is explicitly off. External spool picks keep their existing behaviour.
+
 ## Docker images
 
 The [Docker publishing workflow](.github/workflows/docker-publish.yml) builds `linux/amd64` and `linux/arm64` images for `ghcr.io/carter3dp/bambuddy-3dpotter`. It runs on pushes to `main`, version tags beginning with `v`, and manual runs. A manual run uses the selected branch name as a tag, with characters such as `/` replaced by `-`.

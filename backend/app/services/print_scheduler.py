@@ -4029,10 +4029,9 @@ class PrintScheduler:
         silently downgraded to external-spool mode and print against an empty
         feed. A resolved mapping is re-checked against the target printer's
         live trays before it is trusted (#2799) and recomputed when it does not
-        fit. When it does fit, its resolved slots are kept as they are and only
-        the slots the plate prints that are still unresolved are matched again;
-        all of it is left alone when the user has acknowledged it with "Print
-        Anyway".
+        fit. When it does fit, only unresolved slots are matched again. Saved
+        slicer picks can also switch to a lighter equivalent AMS spool. The
+        mapping is left alone when the user acknowledges it with "Print Anyway".
 
         When recompute cannot resolve it either (no compatible tray loaded), the
         bogus [-1] is cleared to None so it is not later mistaken for an explicit
@@ -4072,7 +4071,12 @@ class PrintScheduler:
                 # loaded since. Nothing else would ever look at that slot again,
                 # so a job held for it would be held again on every Start.
                 filled = await self._fill_unresolved_slots(db, printer_id, item, stored_mapping)
-                if filled is not None:
+                preferred = await self._prefer_lighter_slicer_spools(db, printer_id, item, stored_mapping, filled)
+                if preferred is not None:
+                    item.ams_mapping = json.dumps(preferred)
+                    logger.info("Queue item %s: selected lighter AMS spools: %s", item.id, preferred)
+                    await db.commit()
+                elif filled is not None:
                     item.ams_mapping = json.dumps(filled)
                     logger.info(
                         "Queue item %s: filled unresolved slots of %s on printer %s: %s",
@@ -4133,6 +4137,89 @@ class PrintScheduler:
             await db.commit()
 
         return await self._unmappable_without_ams_message(db, printer_id, item, computed_mapping)
+
+    async def _prefer_lighter_slicer_spools(
+        self,
+        db: AsyncSession,
+        printer_id: int,
+        item: PrintQueueItem,
+        stored_mapping: list | None,
+        filled_mapping: list | None,
+    ) -> list | None:
+        """Use lighter equivalent AMS spools for an archive's saved slicer pick."""
+        if not isinstance(stored_mapping, list) or not isinstance(item.archive_id, int):
+            return None
+        status = printer_manager.get_status(printer_id)
+        if status is None or not status.raw_data.get("ams") or getattr(status, "ams_filament_backup", None) is False:
+            return None
+
+        # Only reconsider the saved slicer mapping for this printer. Mappings
+        # explicitly edited in the queue retain their existing behaviour.
+        archive = await db.get(PrintArchive, item.archive_id)
+        saved = archive.extra_data.get("slicer_ams_mapping") if archive and archive.extra_data else None
+        if (
+            not isinstance(saved, dict)
+            or saved.get("printer_id") != printer_id
+            or saved.get("mapping") != stored_mapping
+        ):
+            return None
+
+        loaded = [tray for tray in self._build_loaded_filaments(status) if not tray["is_external"]]
+        if len(loaded) < 2:
+            return None
+        weights = await self._build_inventory_remain_overrides(db, printer_id, loaded)
+        if len(weights) < 2:
+            return None
+
+        required = await self._get_filament_requirements(db, item)
+        if not required:
+            return None
+        by_id = {tray["global_tray_id"]: tray for tray in loaded}
+        mapping = list(filled_mapping if filled_mapping is not None else stored_mapping)
+        # Keep slots used by other filaments reserved, including slots filled
+        # by the normal matcher. A repeated tray may be intentional.
+        reserved = {tray for tray in mapping if _is_tray_id(tray)}
+        fts_installed = bool(getattr(getattr(status, "fila_switch", None), "installed", False))
+        restrict_route = reports_two_nozzles(status) and not fts_installed
+        for index in sorted(
+            {req["slot_id"] - 1 for req in required if 0 < req.get("slot_id", 0) <= len(stored_mapping)}
+        ):
+            tray_id = stored_mapping[index]
+            if not _is_tray_id(tray_id):
+                continue
+            selected = by_id.get(tray_id)
+            weight = weights.get(tray_id)
+            if selected is None or weight is None or not selected["color_known"]:
+                continue
+
+            # Compare to the spool the user chose. It can intentionally differ
+            # in colour or profile from the filament in the 3MF.
+            material = canonical_filament_type(selected["type"])
+            color = self._normalize_color_for_compare(selected["color"])
+            candidates = [
+                candidate
+                for candidate in loaded
+                if candidate["global_tray_id"] not in reserved
+                and 0 < weights.get(candidate["global_tray_id"], 0) < weight
+                and candidate["color_known"]
+                and canonical_filament_type(candidate["type"]) == material
+                and self._normalize_color_for_compare(candidate["color"]) == color
+                and candidate["tray_info_idx"] == selected["tray_info_idx"]
+                and (
+                    not restrict_route
+                    or candidate["ams_id"] == selected["ams_id"]
+                    or (selected["extruder_id"] is not None and candidate["extruder_id"] == selected["extruder_id"])
+                )
+            ]
+            if candidates:
+                lighter = min(candidates, key=lambda candidate: weights[candidate["global_tray_id"]])
+                mapping[index] = lighter["global_tray_id"]
+                reserved.add(mapping[index])
+                if tray_id not in mapping:
+                    reserved.remove(tray_id)
+
+        baseline = filled_mapping if filled_mapping is not None else stored_mapping
+        return mapping if mapping != baseline else None
 
     async def _external_spool_only_mapping(
         self, db: AsyncSession, printer_id: int, item: PrintQueueItem
@@ -5051,6 +5138,8 @@ class PrintScheduler:
             if spool is None:
                 continue
             label = float(spool.label_weight or 0)
+            if label <= 0:
+                continue
             used = float(spool.weight_used or 0)
             overrides[gtid] = max(0.0, label - used)
         return overrides
