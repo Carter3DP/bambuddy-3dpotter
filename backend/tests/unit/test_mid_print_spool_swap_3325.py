@@ -124,6 +124,23 @@ class TestRecordAssignment:
         assert row.spool_change_log == state.spool_change_log
 
     @pytest.mark.asyncio
+    async def test_confirmed_runout_persists_the_outgoing_spool_balance(self, db_session, printer_factory):
+        printer = await printer_factory()
+        outgoing = Spool(material="PLA", label_weight=1000, weight_used=982)
+        db_session.add(outgoing)
+        await db_session.flush()
+        log = _log(start=outgoing.id)
+        db_session.add(ActivePrintSession(printer_id=printer.id, started_at=datetime.now(), spool_change_log=log))
+        await db_session.commit()
+        state = SimpleNamespace(state="PAUSE", stg_cur=6, layer_num=57, last_loaded_tray=254, spool_change_log=[])
+
+        await self._record(db_session, printer.id, state, spool_id=outgoing.id + 1)
+
+        row = await db_session.get(ActivePrintSession, printer.id)
+        assert row.spool_change_log[-1]["runout_spool"] == outgoing.id
+        assert row.spool_change_log[-1]["runout_remaining_g"] == 18.0
+
+    @pytest.mark.asyncio
     async def test_nothing_is_logged_without_a_print(self, db_session, printer_factory):
         printer = await printer_factory()
         state = SimpleNamespace(layer_num=0, spool_change_log=[])
@@ -277,6 +294,14 @@ class TestBuiltInInventory:
         assert [r["spool_id"] for r in results] == [4, 9]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("layer", "remaining"), [(60, 18.0), (0, 18.0), (60, 80.0)])
+    async def test_runout_charges_the_replacement_only_the_balance(self, layer, remaining):
+        log = _log((9, layer))
+        log[-1].update(runout_spool=4, runout_remaining_g=remaining)
+        _, charged = await _track(log)
+        assert dict(charged) == ({4: remaining, 9: 50.0 - remaining} if remaining < 50 else {4: 50.0})
+
+    @pytest.mark.asyncio
     async def test_a_printer_that_forgot_its_layer_count_still_splits(self):
         # P1S firmware zeroes total_layer_num at print end; the G-code's own
         # last layer bounds the split instead.
@@ -343,6 +368,32 @@ class TestSpoolman:
         assert updated == 2
         assert [c.args for c in client.use_spool.await_args_list] == [(4, 30.0), (9, 20.0)]
         assert cost.priced_grams == pytest.approx(50.0)
+
+    @pytest.mark.asyncio
+    async def test_runout_uses_spoolmans_remaining_weight_before_charging(self):
+        from backend.app.services.spoolman_tracking import _report_spool_usage_for_slots
+
+        client = _client()
+        client.get_spool = AsyncMock(return_value={"id": 4, "remaining_weight": 18.0})
+        log = _log((9, 60), backend=spool_swaps.SPOOLMAN)
+        log[-1]["runout_spool"] = 4
+        swaps = _splitter(log)
+        await swaps.load_spoolman_runout_weights(client)
+        with patch(
+            "backend.app.services.spoolman_tracking._resolve_spool_id_via_slot_assignment", AsyncMock(return_value=9)
+        ):
+            await _report_spool_usage_for_slots(
+                client,
+                [(1, 50.0)],
+                {254: {"tray_type": "PLA"}},
+                [254],
+                "Archive 7",
+                "SERIAL",
+                printer_id=1,
+                swaps=swaps,
+            )
+
+        assert [call.args for call in client.use_spool.await_args_list] == [(4, 18.0), (9, 32.0)]
 
     @pytest.mark.asyncio
     async def test_without_a_swap_nothing_changes(self):

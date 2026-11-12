@@ -1519,6 +1519,7 @@ async def _report_partial_usage(
     tray_changes = list(getattr(state, "tray_change_log", None) or []) if state else []
     # Spools swapped by hand on a tray, shared out up to where the print stopped (#3325).
     swaps = _swap_splitter(printer_id, state, layer_usage, current_layer, completed=False)
+    await swaps.load_spoolman_runout_weights(client)
 
     async def _charge(usage_items: list[tuple[int, float]], method_label: str) -> int:
         used = [(slot_id, grams) for slot_id, grams in usage_items if grams > 0]
@@ -1791,6 +1792,7 @@ async def report_usage(printer_id: int, archive_id: int):
         # describes the same grams Spoolman actually had deducted (#2591).
         print_cost = _PrintCost()
         swaps = _swap_splitter(printer_id, _state, layer_usage_raw, _layer_denom_hint, completed=True)
+        await swaps.load_spoolman_runout_weights(client)
         handled_global_tray_ids: set[int] = set()
         spools_updated = 0
 
