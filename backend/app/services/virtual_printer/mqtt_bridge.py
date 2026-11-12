@@ -790,6 +790,65 @@ class MQTTBridge:
         """Return the most recent real printer push_status `print` dict, or None."""
         return self._latest_print_state
 
+    def get_offline_filament_report(self) -> dict:
+        """Translate the target's saved tray layout into slicer push_status fields."""
+        if self._printer_manager.is_connected(self.target_printer_id):
+            return {}
+        saved = self._printer_manager.last_known_trays(self.target_printer_id)
+        if not saved:
+            return {}
+
+        from backend.app.services.bambu_mqtt import (
+            A2L_LITE_NORMALIZED_AMS_ID,
+            A2L_LITE_PHYSICAL_AMS_ID,
+            normalize_am_unit_id,
+        )
+
+        report: dict = {}
+        units = []
+        unit_bits = tray_bits = 0
+        for unit in saved.get("ams") or []:
+            try:
+                unit_id = int(unit["id"])
+            except (KeyError, TypeError, ValueError):
+                # Older saved readings flattened AMS trays without IDs. They
+                # still work for queue matching, but cannot address a slicer slot.
+                continue
+            unit_id = normalize_am_unit_id(unit_id)
+            is_ht = 128 <= unit_id <= 135
+            if not is_ht and not 0 <= unit_id <= 15:
+                continue
+            trays = []
+            for tray in unit.get("tray") or []:
+                try:
+                    tray_id = int(tray["id"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not 0 <= tray_id < (1 if is_ht else 4):
+                    continue
+                trays.append({**tray, "id": str(tray_id)})
+                if tray.get("tray_type"):
+                    tray_bits |= 1 << (16 + unit_id - 128 if is_ht else unit_id * 4 + tray_id)
+            if trays:
+                wire_id = A2L_LITE_PHYSICAL_AMS_ID if unit_id == A2L_LITE_NORMALIZED_AMS_ID else unit_id
+                units.append({"id": str(wire_id), "tray": trays})
+                unit_bits |= 1 << (4 + unit_id - 128 if is_ht else unit_id)
+        if units:
+            report["ams"] = {
+                "ams": units,
+                "ams_exist_bits": f"{unit_bits:X}",
+                "tray_exist_bits": f"{tray_bits:X}",
+                "tray_now": "255",
+                "tray_tar": "255",
+                "tray_pre": "255",
+            }
+
+        external = [tray for tray in saved.get("vt_tray") or [] if str(tray.get("id")) in {"254", "255"}]
+        if external:
+            report["vt_tray"] = next((tray for tray in external if tray.get("tray_type")), external[0])
+            report["vir_slot"] = external
+        return report
+
     def get_latest_version_modules(self) -> list | None:
         """Return the most recent real printer get_version `module` list, or None."""
         return self._latest_version_modules

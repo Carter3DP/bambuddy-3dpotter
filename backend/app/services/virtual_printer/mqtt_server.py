@@ -802,6 +802,9 @@ class SimpleMQTTServer:
             self._sequence_id += 1
 
             cached = self._bridge.get_latest_print_state() if self._bridge is not None else None
+            offline_filament = self._bridge.get_offline_filament_report() if self._bridge is not None else {}
+            if not isinstance(offline_filament, dict):
+                offline_filament = {}
             if isinstance(cached, dict):
                 # Real-printer-shaped response. Copy the cache, then replace the
                 # protocol / upload-state fields with values under our control.
@@ -812,6 +815,7 @@ class SimpleMQTTServer:
                 # the next real-printer push lands. Cost is one allocation per
                 # status report; the cached dict is already short-lived.
                 print_block = copy.deepcopy(cached)
+                print_block.update(offline_filament)
                 print_block["sequence_id"] = str(self._sequence_id)
                 print_block["command"] = "push_status"
                 print_block["msg"] = 0
@@ -946,6 +950,7 @@ class SimpleMQTTServer:
                 }
             }
 
+            status["print"].update(offline_filament)
             await self._publish_to_report(writer, status, serial or self.serial, log_event=log_event)
 
         except OSError as e:

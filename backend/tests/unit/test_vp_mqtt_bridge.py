@@ -1267,6 +1267,35 @@ class TestStatusReportCachedAsBase:
         assert "storage" in payload["print"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("connected", [False, True])
+    async def test_saved_filament_for_offline_target(self, connected):
+        server = _make_server()
+        bridge = _make_bridge(server)
+        server.set_bridge(bridge)
+        manager = bridge._printer_manager
+        manager.is_connected.return_value = connected
+        manager.last_known_trays.return_value = {
+            "ams": [{"id": "1", "tray": [{"id": "2", "tray_type": "PETG", "tray_color": "112233FF"}]}],
+            "vt_tray": [{"id": "254", "tray_type": "TPU", "tray_color": "445566FF"}],
+        }
+        if connected:
+            bridge._latest_print_state = {"ams": {"ams": [{"id": "0", "tray": [{"id": "0", "tray_type": "PLA"}]}]}}
+        published = self._capture_published(server)
+
+        await server._send_status_report(MagicMock())
+
+        report = published[0][1]["print"]
+        if connected:
+            assert report["ams"]["ams"][0]["tray"][0]["tray_type"] == "PLA"
+            manager.last_known_trays.assert_not_called()
+        else:
+            manager.last_known_trays.assert_called_once_with(42)
+            assert report["ams"]["ams"] == manager.last_known_trays.return_value["ams"]
+            assert report["ams"]["tray_exist_bits"] == "40"
+            assert report["vt_tray"]["tray_type"] == "TPU"
+            assert report["vir_slot"] == manager.last_known_trays.return_value["vt_tray"]
+
+    @pytest.mark.asyncio
     async def test_storage_indicators_overlaid_for_send_preflight(self):
         """#1228: P1S/A1-class firmware doesn't always include the SD/storage
         fields BambuStudio's "Send" pre-flight reads. Without these the
