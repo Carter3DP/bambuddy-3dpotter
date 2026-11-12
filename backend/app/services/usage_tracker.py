@@ -1950,6 +1950,8 @@ async def _track_from_3mf(
                     continue
 
                 for share_spool_id, share_grams in seg_shares or [(seg_spool_id, segment_grams)]:
+                    if share_grams <= 0:
+                        continue
                     spool_result = await db.execute(select(Spool).where(Spool.id == share_spool_id))
                     spool = spool_result.scalar_one_or_none()
                     if not spool:
@@ -2123,6 +2125,8 @@ async def _track_from_3mf(
             continue
 
         for share_spool_id, weight_grams in shares or [(spool_id, slot_grams)]:
+            if weight_grams <= 0:
+                continue
             # Load spool
             spool_result = await db.execute(select(Spool).where(Spool.id == share_spool_id))
             spool = spool_result.scalar_one_or_none()

@@ -31,6 +31,10 @@ Set **Color match threshold (%)** in **Settings → Workflow → Default Print O
 
 Bambuddy saves the last reported AMS and external spool filament for each printer across restarts. Model-based queue jobs use that reading to skip offline printers with incompatible filament, including when deciding which printer to wake with a smart plug. When a compatible printer is busy, the queue shows that printer instead of listing incompatible offline printers.
 
+## Runout spool accounting
+
+When you assign a tracked replacement to the same tray during a confirmed filament-runout pause, Bambuddy charges the outgoing spool up to its tracked remaining weight. The replacement takes the balance of the print usage. Built-in inventory and Spoolman both support this. Ordinary swaps and runouts without a known remaining weight use the existing layer-based split.
+
 ## Docker images
 
 The [Docker publishing workflow](.github/workflows/docker-publish.yml) builds `linux/amd64` and `linux/arm64` images for `ghcr.io/carter3dp/bambuddy-3dpotter`. It runs on pushes to `main`, version tags beginning with `v`, and manual runs. A manual run uses the selected branch name as a tag, with characters such as `/` replaced by `-`.
