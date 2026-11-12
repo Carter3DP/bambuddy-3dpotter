@@ -41,6 +41,14 @@ The [Docker publishing workflow](.github/workflows/docker-publish.yml) builds `l
 
 To build the Working Hours branch, select `feat/working-hours-dispatch` in **Actions → Build and publish image → Run workflow**. When the run succeeds, the branch image is `ghcr.io/carter3dp/bambuddy-3dpotter:feat-working-hours-dispatch`.
 
+## Offline filament in virtual printers
+
+A virtual printer linked to one physical printer reports its last saved AMS and external spool layout to slicers when that printer is offline. The printer must have reported its trays after this update so the snapshot includes slot IDs.
+
+## Lowest remaining spool for slicer mappings
+
+Enable **Workflow → Default Print Options → Prefer lowest-weight AMS spool** to check live AMS slots before dispatching a queued print that uses a saved slicer AMS mapping. The toggle defaults to off, which keeps the slicer’s selection. It can substitute a lighter spool with the same material, colour and filament profile when both spools have known remaining weights from Bambuddy inventory or Spoolman. It keeps the slicer's pick when it cannot compare weights or when AMS Filament Backup is explicitly off. External spool picks keep their existing behaviour. Runout accounting uses the tray Bambuddy actually dispatched.
+
 ## Maintaining this file
 
 Update this file in the same pull request whenever a fork feature is added or its behavior changes. Extend the relevant section or add one for a new feature. Include where to find the feature, its default behavior, and any setup or upgrade steps users need.

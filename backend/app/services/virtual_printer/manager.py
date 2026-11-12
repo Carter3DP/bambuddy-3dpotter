@@ -178,13 +178,9 @@ def _extract_slicer_ams_mapping_json(data: dict, log_prefix: str, *, is_dual_noz
     particular print. Capturing it here — mirroring the existing
     ``nozzle_mapping`` passthrough for H2C rack-swap models (#1780) — lets the
     scheduler's "already resolved, don't touch it" branch in
-    ``_ensure_ams_mapping`` use the slicer's own choice unchanged.
-
-    That branch skipping ``_compute_ams_mapping_for_printer`` is also what
-    makes this a trade rather than a pure win: ``prefer_lowest_filament``, its
-    AMS-filament-backup gate (#1766), the inventory-remain overrides and the
-    per-slot force-color overrides all live inside that function. Callers are
-    responsible for the gating — this parser only says what the slicer sent.
+    ``_ensure_ams_mapping`` start with the slicer's own choice. Dispatch can
+    substitute a lighter equivalent AMS spool when both weights are known.
+    Callers are responsible for gating — this parser only says what the slicer sent.
 
     An external spool is ``-1`` in the flat list, the same as a filament with
     no tray, and is named only in ``ams_mapping2``. It is resolved from there
@@ -597,9 +593,7 @@ class VirtualPrinterInstance:
         # Same two gates as the immediate path in `_add_to_print_queue`: a
         # model-based VP has no live AMS layout for the slicer to have resolved
         # tray IDs against, and taking the slicer's pick at all is the per-VP
-        # `save_ams_mapping` opt-in (it makes the scheduler skip
-        # `_compute_ams_mapping_for_printer`, and with it prefer-lowest and the
-        # #1766 backup gate).
+        # `save_ams_mapping` opt-in.
         ams_mapping_json = (
             _extract_slicer_ams_mapping_json(
                 data, f"[VP {self.name}] Late MQTT", is_dual_nozzle=self._target_is_dual_nozzle()
@@ -1047,8 +1041,8 @@ class VirtualPrinterInstance:
                 # `_extract_slicer_ams_mapping_json`). Stamped onto every plate
                 # below, same treatment as nozzle_mapping_json above — when
                 # present it makes `_ensure_ams_mapping` skip its own
-                # type/color re-derivation entirely and dispatch use exactly
-                # the tray the slicer/user picked.
+                # type/color re-derivation for valid slots and start with
+                # the trays the slicer picked.
                 #
                 # Two gates, both required:
                 #
@@ -1058,15 +1052,10 @@ class VirtualPrinterInstance:
                 #    against — whatever it sends here is meaningless (or,
                 #    worse, coincidentally valid for the wrong printer once
                 #    the scheduler later picks one).
-                # 2. The per-VP `save_ams_mapping` opt-in must be on. Taking
-                #    the slicer's pick means `_ensure_ams_mapping` returns
-                #    early and `_compute_ams_mapping_for_printer` never runs —
-                #    and that function is where `prefer_lowest_filament`, its
-                #    AMS-filament-backup gate (#1766) and the inventory-remain
-                #    overrides live. Honouring the slicer unconditionally would
-                #    silently retire all of that for every existing queue-mode
-                #    VP on upgrade, so it's opt-in like every other queue-mode
-                #    behaviour toggle (#2700 review).
+                # 2. The per-VP `save_ams_mapping` opt-in must be on. The
+                #    scheduler keeps valid slicer picks, except when it can
+                #    substitute an equivalent AMS spool with a lower known
+                #    remaining weight.
                 #
                 # Either gate failing leaves it unset, and the scheduler's
                 # normal type/color re-derivation runs against whichever

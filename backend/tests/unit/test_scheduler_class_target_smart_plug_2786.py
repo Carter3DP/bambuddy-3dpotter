@@ -704,13 +704,15 @@ class TestFilamentIsCheckedBeforeSwitchingOn:
 
         state = PrinterState()
         state.connected = True
-        state.raw_data = _ams(_tray("PLA", "FFFFFFFF"))
+        state.raw_data = _ams(dict(_tray("PLA", "FFFFFFFF"), id="2"))
         with patch("backend.app.core.database.async_session", queue_db.session_maker):
             await PrinterManager().save_last_known_trays(1, state)
             restarted = PrinterManager()
             await restarted.load_last_known_trays_from_db()
 
         saved = restarted.last_known_trays(1)
+        assert saved["ams"][0]["id"] == 0
+        assert saved["ams"][0]["tray"][0]["id"] == "2"
         assert saved["ams"][0]["tray"][0]["tray_type"] == "PLA"
         scheduler = PrintScheduler()
         with patch.object(scheduler, "_is_printer_idle", return_value=False):

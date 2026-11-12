@@ -798,21 +798,33 @@ class PrinterManager:
             return
 
         def filament_fields(trays: list[dict]) -> list[dict]:
-            return [
-                {key: tray.get(key) for key in ("tray_type", "tray_color", "tray_info_idx")}
-                for tray in trays
-                if tray.get("tray_type")
-            ]
+            fields = (
+                "id",
+                "tray_type",
+                "tray_color",
+                "tray_info_idx",
+                "tray_sub_brands",
+                "tray_diameter",
+                "nozzle_temp_min",
+                "nozzle_temp_max",
+                "state",
+            )
+            return [{key: tray[key] for key in fields if key in tray} for tray in trays]
 
         raw = state.raw_data or {}
-        ams_trays = [tray for unit in raw.get("ams") or [] for tray in filament_fields(unit.get("tray") or [])]
+        ams = [
+            {**({"id": unit["id"]} if "id" in unit else {}), "tray": filament_fields(unit.get("tray") or [])}
+            for unit in raw.get("ams") or []
+        ]
         external_trays = filament_fields(raw.get("vt_tray") or [])
-        # An incomplete startup or shutdown report can contain no tray data.
-        # Keep the last useful reading until the printer reports filament again.
-        if not ams_trays and not external_trays:
+        # Keep the last useful reading across incomplete startup or shutdown
+        # reports, but preserve the unit and slot layout in a useful reading.
+        if not any(tray.get("tray_type") for unit in ams for tray in unit["tray"]) and not any(
+            tray.get("tray_type") for tray in external_trays
+        ):
             return
 
-        snapshot = {"ams": [{"tray": ams_trays}] if ams_trays else [], "vt_tray": external_trays}
+        snapshot = {"ams": ams, "vt_tray": external_trays}
         if snapshot == self._last_trays.get(printer_id):
             return
 

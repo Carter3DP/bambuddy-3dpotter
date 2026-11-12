@@ -236,3 +236,48 @@ async def test_happy_path_still_dispatches(queue_factory):
     assert started_at is not None
     ctx.upload.assert_awaited_once()
     ctx.start_print.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_lighter_slicer_spool_is_registered_as_the_dispatched_tray(queue_factory):
+    from backend.app.main import _get_start_ams_mapping, unregister_expected_print
+    from backend.app.services.bambu_mqtt import PrinterState
+
+    ctx = await queue_factory()
+    status = PrinterState(
+        ams_filament_backup=True,
+        raw_data={
+            "ams": [
+                {
+                    "id": "0",
+                    "tray": [
+                        {"id": tray, "tray_type": "PLA", "tray_color": "000000FF", "tray_info_idx": "profile"}
+                        for tray in ("0", "1")
+                    ],
+                }
+            ]
+        },
+    )
+    scheduler = PrintScheduler()
+    async with ctx.session_maker() as db:
+        item = await db.get(PrintQueueItem, ctx.queue_item_id)
+        archive = await db.get(PrintArchive, ctx.archive_id)
+        archive.extra_data = {"slicer_ams_mapping": {"printer_id": ctx.printer_id, "mapping": [0]}}
+        item.ams_mapping = "[0]"
+        await db.commit()
+
+        with (
+            patch.object(scheduler_module.printer_manager, "get_status", return_value=status),
+            patch.object(scheduler, "_get_bool_setting", return_value=True),
+            patch.object(scheduler, "_get_filament_requirements", return_value=[{"slot_id": 1, "type": "PLA"}]),
+            patch.object(scheduler, "_build_inventory_remain_overrides", return_value={0: 200.0, 1: 18.0}),
+        ):
+            await scheduler._ensure_ams_mapping(db, ctx.printer_id, item)
+
+    await _dispatch(ctx)
+    ctx.start_print.assert_called_once()
+    try:
+        assert ctx.start_print.call_args.kwargs["ams_mapping"] == [1]
+        assert _get_start_ams_mapping({}, ctx.printer_id, ctx.archive_id) == [1]
+    finally:
+        unregister_expected_print(ctx.printer_id, ctx.start_print.call_args.args[1], ctx.archive_id)
