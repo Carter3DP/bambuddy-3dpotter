@@ -2778,7 +2778,7 @@ class PrintScheduler:
         try:
             await smart_plug_manager.check_after_hours_idle_off(
                 db,
-                after_hours=hours.after_hours(datetime.now(timezone.utc)),
+                schedule_closed=lambda: hours.after_hours(datetime.now(timezone.utc)),
                 busy_printers=(
                     busy_printers
                     | self._scheduled_drying_printer_ids

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,54 +9,36 @@ from backend.app.services.smart_plug_manager import SmartPlugManager
 
 
 @pytest.mark.asyncio
-async def test_after_hours_power_off_waits_for_each_plugs_delay():
+async def test_after_hours_reuses_auto_off_and_cancels_at_opening():
     manager = SmartPlugManager()
-    plugs = [
-        SimpleNamespace(
-            id=pid,
-            printer_id=pid,
-            name=f"plug{pid}",
-            plug_type="tasmota",
-            ha_entity_id=None,
-            auto_off_pending=False,
-            auto_off_persistent=True,
-            off_delay_mode="time",
-            off_delay_minutes=pid,
-        )
-        for pid in (1, 2, 3)
-    ]
+    plug = SimpleNamespace(id=1, printer_id=1, plug_type="tasmota", auto_off_pending=False)
     db = AsyncMock()
-    db.scalars.return_value.all = lambda: plugs
-    states = {
-        1: PrinterState(connected=True, state="FINISH"),
-        2: PrinterState(connected=True, state="IDLE"),
-        3: PrinterState(connected=True, state="PAUSE"),
-    }
-    service = AsyncMock()
+    db.scalars.return_value.all = lambda: [plug]
+    state = PrinterState(connected=True, state="FINISH")
+    closed = True
+    task = MagicMock()
+
+    def schedule(plug, printer_id, *, allowed):
+        manager._pending_off[plug.id] = task
+
     with (
-        patch.object(module.printer_manager, "get_status", side_effect=states.get),
+        patch.object(module.printer_manager, "get_status", return_value=state),
         patch.object(module.printer_manager, "get_drying_targets", return_value=None),
-        patch.object(module.printer_manager, "mark_printer_offline", side_effect=lambda pid: states.pop(pid)),
-        patch.object(manager, "get_service_for_plug", return_value=service),
-        patch.object(module, "publish_plug_state"),
-        patch.object(module, "run_linked_scripts_after_automatic_switch"),
-        patch.object(module.time, "monotonic") as clock,
+        patch.object(manager, "_schedule_off_per_mode", side_effect=schedule) as auto_off,
     ):
-        clock.return_value = 0
-        await manager.check_after_hours_idle_off(db, after_hours=True, busy_printers=set())
-        clock.return_value = 60
-        await manager.check_after_hours_idle_off(db, after_hours=True, busy_printers={1})
-        service.turn_off.assert_not_awaited()
-
-        clock.return_value = 120
-        await manager.check_after_hours_idle_off(db, after_hours=True, busy_printers=set())
-        service.turn_off.assert_awaited_once_with(plugs[1])
-
-        await manager.check_after_hours_idle_off(db, after_hours=False, busy_printers=set())
-        clock.return_value = 3600
-        await manager.check_after_hours_idle_off(db, after_hours=True, busy_printers=set())
-        assert service.turn_off.await_count == 1
-
-        clock.return_value = 3660
-        await manager.check_after_hours_idle_off(db, after_hours=True, busy_printers=set())
-        assert [call.args[0].id for call in service.turn_off.await_args_list] == [2, 1]
+        await manager.check_after_hours_idle_off(db, schedule_closed=lambda: closed, busy_printers={1})
+        auto_off.assert_not_called()
+        await manager.check_after_hours_idle_off(db, schedule_closed=lambda: closed, busy_printers=set())
+        await manager.check_after_hours_idle_off(db, schedule_closed=lambda: closed, busy_printers=set())
+        auto_off.assert_called_once()
+        assert auto_off.call_args.args == (plug, 1)
+        allowed = auto_off.call_args.kwargs["allowed"]
+        assert allowed()
+        state.state = "PAUSE"
+        assert not allowed()
+        state.state = "FINISH"
+        closed = False
+        assert not allowed()
+        await manager.check_after_hours_idle_off(db, schedule_closed=lambda: closed, busy_printers=set())
+        task.cancel.assert_called_once()
+        assert 1 not in manager._pending_off
