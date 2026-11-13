@@ -132,6 +132,7 @@ class SmartPlugManager:
 
     def __init__(self):
         self._pending_off: dict[int, asyncio.Task] = {}  # plug_id -> task
+        self._after_hours_idle_since: dict[int, float] = {}  # plug_id -> monotonic time
         self._scheduler_task: asyncio.Task | None = None
         self._snapshot_task: asyncio.Task | None = None
         self._power_alert_task: asyncio.Task | None = None
@@ -516,6 +517,90 @@ class SmartPlugManager:
         else:
             # Default / "time": also the safe fallback for any unexpected value.
             self._schedule_delayed_off(plug, printer_id, plug.off_delay_minutes * 60)
+
+    @staticmethod
+    def _idle_for_after_hours_off(printer_id: int) -> bool:
+        from backend.app.services.firmware_update import upload_in_progress
+
+        state = printer_manager.get_status(printer_id)
+        return bool(
+            state
+            and state.connected
+            and state.state in ("IDLE", "FINISH")
+            and not upload_in_progress(printer_id)
+            and not printer_manager.get_drying_targets(printer_id)
+            and not any(int(unit.get("dry_time") or 0) > 0 for unit in state.raw_data.get("ams") or [])
+        )
+
+    async def check_after_hours_idle_off(self, db: AsyncSession, *, after_hours: bool, busy_printers: set[int]) -> None:
+        """Apply each printer power plug's auto-off strategy after closing."""
+        if not after_hours:
+            self._after_hours_idle_since.clear()
+            return
+
+        from backend.app.models.smart_plug import SmartPlug
+
+        plugs = (
+            await db.scalars(
+                select(SmartPlug).where(
+                    SmartPlug.enabled.is_(True),
+                    SmartPlug.auto_off.is_(True),
+                    SmartPlug.controls_printer_power.is_(True),
+                    SmartPlug.printer_id.is_not(None),
+                )
+            )
+        ).all()
+        now = time.monotonic()
+        eligible = set()
+        for plug in plugs:
+            printer_id = plug.printer_id
+            if (
+                printer_id is None
+                or printer_id in busy_printers
+                or plug.id in self._pending_off
+                or plug.auto_off_pending
+                or (plug.plug_type == "homeassistant" and (plug.ha_entity_id or "").startswith("script."))
+                or not self._idle_for_after_hours_off(printer_id)
+            ):
+                continue
+
+            eligible.add(plug.id)
+            idle_since = self._after_hours_idle_since.setdefault(plug.id, now)
+            if plug.off_delay_mode == "temperature":
+                state = printer_manager.get_status(printer_id)
+                temps = state.temperatures or {} if state else {}
+                nozzle_temps = [temps.get("nozzle", 999)]
+                if temps.get("nozzle_2") is not None:
+                    nozzle_temps.append(temps["nozzle_2"])
+                if max(nozzle_temps) >= plug.off_temp_threshold:
+                    continue
+            elif now - idle_since < plug.off_delay_minutes * 60:
+                continue
+
+            try:
+                service = await self.get_service_for_plug(plug, db)
+                if not self._idle_for_after_hours_off(printer_id) or plug.id in self._pending_off:
+                    continue
+                if not await service.turn_off(plug):
+                    continue
+            except Exception:
+                logger.warning("After-hours auto-off failed for plug %s", plug.id, exc_info=True)
+                continue
+
+            # Match the normal auto-off path, including one-shot behaviour.
+            plug.auto_off = plug.auto_off_persistent
+            plug.auto_off_executed = False
+            plug.last_state = "OFF"
+            plug.last_checked = utcnow_naive()
+            printer_manager.mark_printer_offline(printer_id)
+            await db.commit()
+            await publish_plug_state(plug.id, plug.name, printer_id, on=False, ha_entity_id=plug.ha_entity_id)
+            await run_linked_scripts_after_automatic_switch(printer_id, plug, "OFF")
+            eligible.discard(plug.id)
+
+        self._after_hours_idle_since = {
+            plug_id: since for plug_id, since in self._after_hours_idle_since.items() if plug_id in eligible
+        }
 
     async def schedule_off_after_queue_job(self, printer_id: int, db: AsyncSession):
         """Schedule auto-off for a printer after a queue job that opted in.

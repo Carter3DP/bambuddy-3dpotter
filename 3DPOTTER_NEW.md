@@ -9,6 +9,7 @@ Configure a daily schedule in **Settings → Workflow → Queue & Dispatch → W
 - **Queue scheduling.** During Working Hours, the scheduler prioritizes eligible jobs estimated to finish before closing. If no eligible job fits, the scheduler falls back to the normal queue order. The queue and timeline reflect the dispatch order.
 - **Per-job control.** A clock and **Moved by Working Hours** badge identify jobs whose order changed. Drag a job or use its mobile move arrows to reserve a position for the current window. Click its **Manual position** badge to return it to automatic ordering. These moves leave the saved normal queue positions intact.
 - **Between-print warming.** If **Keep bed warm between prints** and Working Hours are both enabled, Bambuddy holds the bed warm only during the working window and releases the hold on the next scheduler check after closing. With Working Hours disabled, the existing warming rules apply at any time. Preheat and heat soak for a print about to start can still run after hours.
+- **After-hours power off.** Outside Working Hours, an idle printer or one awaiting plate clear can power off through its enabled printer power plug when Auto Off is on. The plug's delay starts when the scheduler first sees the printer idle after closing. Temperature-mode plugs use their nozzle threshold. A print, upload, or drying cycle takes priority, and reopening resets the idle timer.
 
 ### End-of-day queue behavior
 
