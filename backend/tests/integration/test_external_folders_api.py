@@ -759,21 +759,18 @@ class TestExternalFolderProtections:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_delete_external_file_removes_db_only(
-        self, async_client: AsyncClient, db_session, readonly_folder, external_dir
+    async def test_delete_external_file_rejects_readonly_share(
+        self, async_client: AsyncClient, readonly_folder, external_dir
     ):
-        """Verify deleting an external file only removes DB entry, not the file on disk."""
+        """Read-only linked files remain on the drive and in the library."""
         response = await async_client.get(f"/api/v1/library/files?folder_id={readonly_folder['id']}")
-        files = response.json()
-        ext_file_id = files[0]["id"]
-        ext_filename = files[0]["filename"]
+        file = response.json()[0]
 
-        # Delete via API
-        response = await async_client.delete(f"/api/v1/library/files/{ext_file_id}")
+        response = await async_client.delete(f"/api/v1/library/files/{file['id']}")
+        assert response.status_code == 403
+        assert (external_dir / file["filename"]).exists()
+        response = await async_client.get(f"/api/v1/library/files/{file['id']}")
         assert response.status_code == 200
-
-        # File should still exist on disk
-        assert (external_dir / ext_filename).exists()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

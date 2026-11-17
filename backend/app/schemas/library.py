@@ -372,6 +372,7 @@ class BulkDeleteResponse(BaseModel):
 
     deleted_files: int
     deleted_folders: int
+    failed_files: dict[int, str] = Field(default_factory=dict)
 
 
 # ============ Queue Operations ============

@@ -1,13 +1,14 @@
 """Integration tests for the library trash bin + admin purge (#1008)."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 
 
 @pytest.fixture
-async def file_factory(db_session):
+async def file_factory(db_session, tmp_path, monkeypatch):
     """Factory for LibraryFile rows with sensible defaults."""
     _counter = [0]
 
@@ -22,6 +23,18 @@ async def file_factory(db_session):
             "file_size": 1024 * counter,
             "file_type": "3mf",
         }
+        if kwargs.get("is_external"):
+            from backend.app.models.library import LibraryFolder
+
+            share = tmp_path / f"share_{counter}"
+            share.mkdir()
+            monkeypatch.setenv("BAMBUDDY_EXTERNAL_ROOTS", str(tmp_path))
+            folder = LibraryFolder(name=share.name, is_external=True, external_path=str(share), external_readonly=False)
+            db_session.add(folder)
+            await db_session.flush()
+            disk_file = share / kwargs.get("filename", defaults["filename"])
+            disk_file.write_bytes(b"linked file")
+            defaults.update(folder_id=folder.id, file_path=str(disk_file))
         defaults.update(kwargs)
         lib_file = LibraryFile(**defaults)
         db_session.add(lib_file)
@@ -72,19 +85,66 @@ async def test_delete_file_moves_to_trash(async_client: AsyncClient, file_factor
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_delete_external_file_hard_deletes(async_client: AsyncClient, file_factory, db_session):
-    """External files skip the trash — DB row is dropped directly."""
+    """External files skip the trash and their bytes are removed."""
     from backend.app.models.library import LibraryFile
 
     f = await file_factory(is_external=True)
     file_id = f.id
+    disk_file = Path(f.file_path)
     response = await async_client.delete(f"/api/v1/library/files/{file_id}")
     assert response.status_code == 200
     assert response.json()["trashed"] is False
+    assert not disk_file.exists()
 
     # The route commits in its own session; expire ours so get() re-reads.
     db_session.expire_all()
     missing = await db_session.get(LibraryFile, file_id)
     assert missing is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_bulk_delete_keeps_read_only_linked_files(async_client: AsyncClient, file_factory, db_session):
+    from backend.app.models.library import LibraryFile, LibraryFolder
+
+    writable = await file_factory(is_external=True)
+    readonly = await file_factory(is_external=True)
+    folder = await db_session.get(LibraryFolder, readonly.folder_id)
+    folder.external_readonly = True
+    await db_session.commit()
+    readonly_id = readonly.id
+    readonly_path, writable_path = Path(readonly.file_path), Path(writable.file_path)
+
+    single = await async_client.delete(f"/api/v1/library/files/{readonly_id}")
+    assert single.status_code == 403
+
+    bulk = await async_client.post(
+        "/api/v1/library/bulk-delete",
+        json={"file_ids": [writable.id, readonly_id], "folder_ids": []},
+    )
+    assert bulk.status_code == 200
+    assert bulk.json()["deleted_files"] == 1
+    assert str(readonly_id) in bulk.json()["failed_files"]
+    assert not writable_path.exists()
+    assert readonly_path.exists()
+    assert await db_session.get(LibraryFile, readonly_id, populate_existing=True) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_external_file_unlink_failure_keeps_library_entry(async_client: AsyncClient, file_factory, db_session):
+    from backend.app.models.library import LibraryFile
+
+    library_file = await file_factory(is_external=True)
+    file_id = library_file.id
+    disk_file = Path(library_file.file_path)
+    # Simulate a path that can no longer be unlinked as a file.
+    disk_file.unlink()
+    disk_file.mkdir()
+    response = await async_client.delete(f"/api/v1/library/files/{file_id}")
+    assert response.status_code == 409
+    assert disk_file.is_dir()
+    assert await db_session.get(LibraryFile, file_id, populate_existing=True) is not None
 
 
 @pytest.mark.asyncio

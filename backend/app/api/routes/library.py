@@ -5644,6 +5644,30 @@ async def update_file(
     return await get_file(file_id, db, auth_result=(None, True))
 
 
+def _unlink_external_library_file(file: LibraryFile) -> None:
+    """Remove a linked file from its registered writable folder."""
+    folder = file.folder
+    if folder is None or not folder.is_external or not folder.external_path:
+        raise HTTPException(status_code=409, detail="File has no linked external folder")
+    if folder.external_readonly:
+        raise HTTPException(status_code=403, detail="Cannot delete files from a read-only external folder")
+
+    directory = Path(folder.external_path)
+    file_path = Path(file.file_path)
+    if not directory.is_absolute() or file_path.parent != directory or file_path.name in {"", ".", ".."}:
+        raise HTTPException(status_code=409, detail="File is outside its linked external folder")
+
+    try:
+        if _validate_external_path(str(directory)) != directory:
+            raise HTTPException(status_code=409, detail="Linked external folder now points to a different location")
+        # Unlink the directory entry itself, including when it is a symlink.
+        # Resolving the leaf would delete the symlink's target instead.
+        file_path.unlink(missing_ok=True)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Failed to delete linked library file %s: %s", file.id, exc)
+        raise HTTPException(status_code=409, detail="Could not delete the file from the external drive") from exc
+
+
 @router.delete("/files/{file_id}")
 async def delete_file(
     file_id: int,
@@ -5658,14 +5682,14 @@ async def delete_file(
     """Move a file to the trash (soft-delete).
 
     The file's bytes and thumbnail stay on disk until the trash sweeper
-    hard-deletes the row after the retention window (see #1008). External
-    files skip the trash entirely — they can't be restored from disk and the
-    underlying file is outside Bambuddy's control, so we just drop the DB
-    record and thumbnail.
+    hard-deletes the row after the retention window (see #1008). Files on
+    writable external folders are permanently deleted from disk.
     """
     user, can_modify_all = auth_result
 
-    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    result = await db.execute(
+        LibraryFile.active().options(selectinload(LibraryFile.folder)).where(LibraryFile.id == file_id)
+    )
     file = result.scalar_one_or_none()
 
     if not file:
@@ -5677,7 +5701,7 @@ async def delete_file(
             raise HTTPException(status_code=403, detail="You can only delete your own files")
 
     if file.is_external:
-        # External files bypass the trash — just drop the DB row + our thumbnail.
+        await asyncio.to_thread(_unlink_external_library_file, file)
         abs_thumb_path = to_absolute_path(file.thumbnail_path)
         if abs_thumb_path and abs_thumb_path.exists():
             try:
@@ -6257,25 +6281,31 @@ async def bulk_delete(
     user, can_modify_all = auth_result
     deleted_files = 0
     deleted_folders = 0
-    skipped_files = 0
+    failed_files: dict[int, str] = {}
     # External files bypass the trash and are removed for good, so the queue has
     # to come off them. Collected here and dealt with once, below the loop.
     hard_deleted: list[LibraryFile] = []
 
     # Delete files first. Managed files go to trash (sweeper hard-deletes bytes
-    # later); external files bypass trash since their disk state is outside our
-    # control and can't be restored from trash anyway.
+    # later); writable external files are permanently deleted from the drive.
     now = datetime.now(timezone.utc)
-    for file_id in data.file_ids:
-        result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+    for file_id in dict.fromkeys(data.file_ids):
+        result = await db.execute(
+            LibraryFile.active().options(selectinload(LibraryFile.folder)).where(LibraryFile.id == file_id)
+        )
         file = result.scalar_one_or_none()
         if not file:
             continue
         if not can_modify_all and file.created_by_id != user.id:
-            skipped_files += 1
+            failed_files[file_id] = "You can only delete your own files"
             continue
 
         if file.is_external:
+            try:
+                await asyncio.to_thread(_unlink_external_library_file, file)
+            except HTTPException as exc:
+                failed_files[file_id] = str(exc.detail)
+                continue
             abs_thumb_path = to_absolute_path(file.thumbnail_path)
             if abs_thumb_path and abs_thumb_path.exists():
                 try:
@@ -6312,6 +6342,9 @@ async def bulk_delete(
                 continue
             if not can_modify_all and folder_delete_blocker(index, folder, user):
                 continue
+            tree_file_ids = await _folder_tree_file_ids(db, folder_id)
+            if any(file_id in failed_files for file_id in tree_file_ids):
+                continue
             # Count files that will be deleted
             file_count_result = await db.execute(
                 select(func.count(LibraryFile.id)).where(
@@ -6320,7 +6353,6 @@ async def bulk_delete(
                 )
             )
             deleted_files += file_count_result.scalar() or 0
-            tree_file_ids = await _folder_tree_file_ids(db, folder_id)
             await delete_dependent_variants(db, tree_file_ids)
             await release_queue_references(db, tree_file_ids)
             # The cascade hard-deletes every row in the subtree, so their
@@ -6332,7 +6364,7 @@ async def bulk_delete(
 
     await db.commit()
 
-    return BulkDeleteResponse(deleted_files=deleted_files, deleted_folders=deleted_folders)
+    return BulkDeleteResponse(deleted_files=deleted_files, deleted_folders=deleted_folders, failed_files=failed_files)
 
 
 # ============ Stats Endpoint ============
