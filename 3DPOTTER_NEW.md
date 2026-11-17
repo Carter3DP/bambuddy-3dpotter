@@ -48,7 +48,7 @@ A virtual printer linked to one physical printer reports its last saved AMS and 
 
 ## Lowest remaining spool for slicer mappings
 
-Enable **Workflow → Default Print Options → Prefer lowest-weight AMS spool** to check live AMS slots before dispatching a queued print that uses a saved slicer AMS mapping. The toggle defaults to off, which keeps the slicer’s selection. It can substitute a lighter spool with the same material, colour and filament profile when both spools have known remaining weights from Bambuddy inventory or Spoolman. It keeps the slicer's pick when it cannot compare weights or when AMS Filament Backup is explicitly off. External spool picks keep their existing behaviour. Runout accounting uses the tray Bambuddy actually dispatched.
+Enable **Workflow → Default Print Options → Prefer lowest-weight AMS spool** to check live AMS slots before dispatching a queued print that uses a saved slicer AMS mapping. The toggle defaults to off, which keeps the slicer’s selection. It can substitute a lighter spool with the same material, colour and filament profile when both spools have comparable readings. It uses remaining grams from Bambuddy inventory or Spoolman when both slots are tracked, or compares AMS-reported remaining percentages when either slot lacks a tracked weight. It keeps the slicer's pick when it cannot compare readings or when AMS Filament Backup is explicitly off. External spool picks keep their existing behaviour. Runout accounting uses the tray Bambuddy actually dispatched.
 
 ## Maintaining this file
 

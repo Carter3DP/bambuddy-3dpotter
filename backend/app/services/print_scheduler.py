@@ -4197,8 +4197,6 @@ class PrintScheduler:
         if len(loaded) < 2:
             return None
         weights = await self._build_inventory_remain_overrides(db, printer_id, loaded)
-        if len(weights) < 2:
-            return None
 
         required = await self._get_filament_requirements(db, item)
         if not required:
@@ -4217,8 +4215,7 @@ class PrintScheduler:
             if not _is_tray_id(tray_id):
                 continue
             selected = by_id.get(tray_id)
-            weight = weights.get(tray_id)
-            if selected is None or weight is None or not selected["color_known"]:
+            if selected is None or not selected["color_known"]:
                 continue
 
             # Compare to the spool the user chose. It can intentionally differ
@@ -4229,7 +4226,6 @@ class PrintScheduler:
                 candidate
                 for candidate in loaded
                 if candidate["global_tray_id"] not in reserved
-                and 0 < weights.get(candidate["global_tray_id"], 0) < weight
                 and candidate["color_known"]
                 and canonical_filament_type(candidate["type"]) == material
                 and self._normalize_color_for_compare(candidate["color"]) == color
@@ -4240,9 +4236,30 @@ class PrintScheduler:
                     or (selected["extruder_id"] is not None and candidate["extruder_id"] == selected["extruder_id"])
                 )
             ]
-            if candidates:
-                lighter = min(candidates, key=lambda candidate: weights[candidate["global_tray_id"]])
-                mapping[index] = lighter["global_tray_id"]
+            # Prefer inventory grams when both slots are tracked. Otherwise
+            # compare the AMS percentages directly, without mixing units.
+            weight = weights.get(tray_id)
+            remain = selected["remain"]
+            lighter_slots: list[tuple[int, float, int]] = []
+            for candidate in candidates:
+                candidate_id = candidate["global_tray_id"]
+                candidate_weight = weights.get(candidate_id)
+                if candidate_weight is not None and candidate_weight <= 0:
+                    continue
+                if weight is not None and candidate_weight is not None:
+                    if candidate_weight < weight:
+                        lighter_slots.append((0, candidate_weight, candidate_id))
+                    continue
+                candidate_remain = candidate["remain"]
+                if (
+                    isinstance(remain, (int, float))
+                    and isinstance(candidate_remain, (int, float))
+                    and 0 < candidate_remain < remain <= 100
+                ):
+                    lighter_slots.append((1, candidate_remain, candidate_id))
+
+            if lighter_slots:
+                mapping[index] = min(lighter_slots)[2]
                 reserved.add(mapping[index])
                 if tray_id not in mapping:
                     reserved.remove(tray_id)
