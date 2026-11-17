@@ -1777,6 +1777,12 @@ class PrintScheduler:
                 self._sweep_keep_warm(active_candidates=set(), dispatched=set())
                 inflight_printers = {pid for (_task, pid) in self._inflight.values() if pid is not None}
                 await self._check_auto_drying(db, [], inflight_printers)
+                if after_hours:
+                    printing = await db.scalars(
+                        select(PrintQueueItem.printer_id).where(PrintQueueItem.status == "printing")
+                    )
+                    inflight_printers |= {pid for pid in printing if pid is not None}
+                await self._check_after_hours_idle_off(db, hours, inflight_printers)
                 await self._check_filament_low(db)
                 await self._check_stock_forecast(db)
                 return bool(self._inflight)
@@ -2746,6 +2752,11 @@ class PrintScheduler:
 
             # Auto-drying: start drying on idle printers that have no pending queue items
             await self._check_auto_drying(db, items, dispatching_printers)
+            await self._check_after_hours_idle_off(
+                db,
+                hours,
+                dispatching_printers | {it.printer_id for it in items if it.id in dispatch_ids and it.printer_id},
+            )
 
             # Low filament: alert on assigned spools that have crossed their
             # low-stock threshold (#2913). Runs on both paths out of this method
@@ -2762,6 +2773,21 @@ class PrintScheduler:
             # 30 s idle sleep (#2602). Selecting anything this pass (launched or
             # deferred because the pool was full) also counts as productive.
             return bool(dispatch_ids) or bool(self._inflight)
+
+    async def _check_after_hours_idle_off(self, db: AsyncSession, hours: WorkingHours, busy_printers: set[int]) -> None:
+        try:
+            await smart_plug_manager.check_after_hours_idle_off(
+                db,
+                schedule_closed=lambda: hours.after_hours(datetime.now(timezone.utc)),
+                busy_printers=(
+                    busy_printers
+                    | self._scheduled_drying_printer_ids
+                    | {pid for pid in list(self._dispatch_holds) if self._printer_in_dispatch_hold(pid)}
+                    | {pid for _, pid in self._inflight.values() if pid is not None}
+                ),
+            )
+        except Exception:
+            logger.warning("After-hours smart plug check failed", exc_info=True)
 
     def _launch_uploads(self, item_ids: list[int], item_printers: dict[int, int | None], limit: int) -> None:
         """Launch selected uploads as a refillable pool, capped at ``limit`` (#2602).
