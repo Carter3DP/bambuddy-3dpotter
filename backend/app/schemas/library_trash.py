@@ -45,6 +45,7 @@ class TrashListResponse(BaseModel):
 
 class TrashSettings(BaseModel):
     retention_days: int = Field(ge=1, le=365)
+    external_trash_folder: str | None = Field(default=None, max_length=200)
     auto_purge_enabled: bool = False
     auto_purge_days: int = Field(default=90, ge=7, le=3650)
     auto_purge_include_never_printed: bool = True

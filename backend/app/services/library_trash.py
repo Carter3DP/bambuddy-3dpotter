@@ -10,23 +10,27 @@ Two-stage file deletion for the library:
 2. A background sweeper in this service hard-deletes rows (and their bytes)
    whose ``deleted_at`` is older than the configured retention window.
 
-External files (``is_external=True``) are never placed in the trash — their
-bytes live outside Bambuddy's control, so there's nothing to restore.
+Linked files are moved to a trash directory on their own drive. Their original
+path stays on the row so they can be restored.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import stat
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from fastapi import HTTPException
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
-from backend.app.models.library import LibraryFile
+from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.print_queue import PrintQueueItem, PrintQueueVariant
 from backend.app.models.settings import Settings
 from backend.app.utils.library_paths import remove_library_photos_dir
@@ -38,6 +42,9 @@ logger = logging.getLogger(__name__)
 # reads this on every tick so the UI can change it without a restart.
 TRASH_RETENTION_KEY = "library_trash_retention_days"
 DEFAULT_RETENTION_DAYS = 30
+TRASH_FOLDER_KEY = "library_external_trash_folder"
+DEFAULT_TRASH_FOLDER = ".bambuddy-trash"
+TRASH_MARKER = ".bambuddy-trash-marker"
 # Clamp retention to a sensible range. 1 day is a reasonable floor (anything
 # shorter just makes trash into hard-delete); 365 gives admins plenty of rope
 # without letting accidental typos (99999) grow the table unboundedly.
@@ -97,7 +104,12 @@ def _purge_filter(cutoff: datetime, include_never_printed: bool):
         age_clause = last_printed_old
     return and_(
         LibraryFile.deleted_at.is_(None),
-        LibraryFile.is_external.is_(False),
+        or_(
+            LibraryFile.is_external.is_(False),
+            LibraryFile.folder.has(
+                and_(LibraryFolder.is_external.is_(True), LibraryFolder.external_readonly.is_(False))
+            ),
+        ),
         age_clause,
     )
 
@@ -182,6 +194,112 @@ class LibraryTrashService:
             db.add(Settings(key=key, value=value))
         else:
             row.value = value
+
+    async def get_trash_folder(self, db: AsyncSession) -> str:
+        return await self._read_setting(db, TRASH_FOLDER_KEY) or DEFAULT_TRASH_FOLDER
+
+    async def set_trash_folder(self, db: AsyncSession, name: str) -> str:
+        name = name.strip()
+        if name in {"", ".", ".."} or any(c in name for c in '/\\:*?"<>|') or any(ord(c) < 32 for c in name):
+            raise HTTPException(status_code=400, detail="Trash folder must be a single folder name")
+        await self._write_setting(db, TRASH_FOLDER_KEY, name)
+        return name
+
+    async def _linked_location(self, db: AsyncSession, file: LibraryFile) -> tuple[Path, Path]:
+        folder = await db.get(LibraryFolder, file.folder_id) if file.folder_id is not None else None
+        if folder is None or not folder.is_external or not folder.external_path:
+            raise HTTPException(status_code=409, detail="File has no linked external folder")
+
+        source = Path(file.file_path)
+        directory = Path(folder.external_path)
+        if not directory.is_absolute() or source.parent != directory or source.name in {"", ".", ".."}:
+            raise HTTPException(status_code=409, detail="File is outside its linked external folder")
+
+        # A scanned subfolder shares the trash at the root of its linked drive.
+        root = directory
+        while True:
+            if folder.external_readonly:
+                raise HTTPException(status_code=403, detail="Cannot modify files on a read-only external folder")
+            parent = await db.get(LibraryFolder, folder.parent_id) if folder.parent_id is not None else None
+            if parent is None or not parent.is_external or not parent.external_path:
+                break
+            parent_path = Path(parent.external_path)
+            if parent_path not in root.parents:
+                break
+            root = parent_path
+            folder = parent
+        return source, root
+
+    @staticmethod
+    def _check_directory(directory: Path) -> None:
+        from backend.app.api.routes.library import _validate_external_path
+
+        if _validate_external_path(str(directory)) != directory:
+            raise HTTPException(status_code=409, detail="Linked path now points to a different location")
+
+    @classmethod
+    def _move_to_external_trash(cls, source: Path, root: Path, folder_name: str) -> Path:
+        cls._check_directory(source.parent)
+        cls._check_directory(root)
+        if stat.S_ISDIR(source.lstat().st_mode):
+            raise IsADirectoryError(source)
+
+        trash = root / folder_name
+        trash.mkdir(exist_ok=True)
+        cls._check_directory(trash)
+        marker = trash / TRASH_MARKER
+        if marker.is_symlink():
+            raise HTTPException(status_code=409, detail="Invalid trash folder marker")
+        if not marker.is_file():
+            if any(trash.iterdir()):
+                raise HTTPException(status_code=409, detail="Choose an empty folder for linked-drive trash")
+            marker.touch(exist_ok=True)
+
+        entry = trash / uuid.uuid4().hex
+        entry.mkdir()
+        destination = entry / source.name
+        try:
+            source.rename(destination)
+        except OSError:
+            with contextlib.suppress(OSError):
+                entry.rmdir()
+            raise
+        return destination
+
+    @classmethod
+    def _restore_external(cls, source: Path, destination: Path) -> None:
+        cls._check_directory(source.parent)
+        cls._check_directory(destination.parent)
+        # Reserve the original filename without overwriting a new file or link.
+        destination.touch(exist_ok=False)
+        try:
+            source.replace(destination)
+        except OSError:
+            destination.unlink(missing_ok=True)
+            raise
+
+    async def trash_file(self, db: AsyncSession, file: LibraryFile, *, folder_name: str | None = None) -> None:
+        """Trash a file and persist the location of any bytes moved on a drive."""
+        destination = None
+        if file.is_external:
+            source, root = await self._linked_location(db, file)
+            if folder_name is None:
+                folder_name = await self.get_trash_folder(db)
+            try:
+                destination = await asyncio.to_thread(self._move_to_external_trash, source, root, folder_name)
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Could not trash linked library file %s: %s", file.id, exc)
+                raise HTTPException(status_code=409, detail="Could not move the file to linked-drive trash") from exc
+            file.trash_path = str(destination)
+        file.deleted_at = utcnow_naive()
+        try:
+            await db.commit()
+        except Exception:
+            if destination is not None:
+                await asyncio.to_thread(self._restore_external, destination, source)
+                with contextlib.suppress(OSError):
+                    destination.parent.rmdir()
+            raise
 
     async def get_auto_purge_settings(self, db: AsyncSession) -> dict:
         """Return the current auto-purge config.
@@ -283,7 +401,7 @@ class LibraryTrashService:
         """Count + size of files eligible for purge. Reads only; never mutates."""
         if older_than_days < 1:
             return {"count": 0, "total_bytes": 0, "sample_filenames": []}
-        now = datetime.now(timezone.utc)
+        now = utcnow_naive()
         cutoff = _age_cutoff(now, older_than_days)
         clause = _purge_filter(cutoff, include_never_printed)
 
@@ -315,30 +433,32 @@ class LibraryTrashService:
         """Move matching files to trash (stamps ``deleted_at``). Returns count."""
         if older_than_days < 1:
             return 0
-        now = datetime.now(timezone.utc)
+        now = utcnow_naive()
         cutoff = _age_cutoff(now, older_than_days)
         clause = _purge_filter(cutoff, include_never_printed)
 
-        # We need the IDs so callers can audit or display them if they want.
-        # Doing a single UPDATE ... WHERE is safe even under concurrent
-        # uploads — the clause already excludes rows with deleted_at set.
-        id_result = await db.execute(select(LibraryFile.id).where(clause))
-        ids = [row[0] for row in id_result.all()]
-        if not ids:
-            return 0
-
-        await db.execute(LibraryFile.__table__.update().where(LibraryFile.id.in_(ids)).values(deleted_at=now))
+        rows = (await db.execute(select(LibraryFile).where(clause))).scalars().all()
+        folder_name = await self.get_trash_folder(db)
+        moved = 0
+        for row in rows:
+            if row.is_external:
+                try:
+                    await self.trash_file(db, row, folder_name=folder_name)
+                except HTTPException as exc:
+                    logger.warning("Library purge: skipped linked file %s: %s", row.id, exc.detail)
+                    continue
+            else:
+                row.deleted_at = now
+            moved += 1
         await db.commit()
-        logger.info("Library purge: moved %d file(s) to trash (older_than_days=%d)", len(ids), older_than_days)
-        return len(ids)
+        return moved
 
     # ---- Sweeper ------------------------------------------------------
 
     async def _sweep(self, db: AsyncSession) -> int:
         """Hard-delete trashed rows whose retention window has elapsed."""
         retention = await self._read_retention(db)
-        now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=retention)
+        cutoff = utcnow_naive() - timedelta(days=retention)
 
         result = await db.execute(
             select(LibraryFile).where(
@@ -350,23 +470,43 @@ class LibraryTrashService:
         if not rows:
             return 0
 
-        deleted = 0
+        doomed_ids = []
         for row in rows:
-            self._unlink_on_disk(row)
-            deleted += 1
-        await delete_dependent_variants(db, [r.id for r in rows])
-        await release_queue_references(db, [r.id for r in rows])
-        # Single DELETE is faster than N await db.delete() round-trips; we
-        # still need the Python loop above to unlink bytes on disk.
-        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_([r.id for r in rows])))
-        await db.commit()
-        logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
-        return deleted
+            try:
+                await self._remove_trashed_bytes(row)
+            except HTTPException as exc:
+                logger.warning("Trash sweep: retaining linked file %s: %s", row.id, exc.detail)
+                continue
+            doomed_ids.append(row.id)
+        if doomed_ids:
+            await delete_dependent_variants(db, doomed_ids)
+            await release_queue_references(db, doomed_ids)
+            await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(doomed_ids)))
+            await db.commit()
+        return len(doomed_ids)
+
+    async def _remove_trashed_bytes(self, row: LibraryFile) -> None:
+        if row.trash_path:
+            path = Path(row.trash_path)
+            try:
+                self._check_directory(path.parent.parent)
+                if not (path.parent.parent / TRASH_MARKER).is_file():
+                    raise HTTPException(status_code=409, detail="Linked-drive trash is not accessible")
+                if path.parent.is_symlink():
+                    raise HTTPException(status_code=409, detail="Linked trash entry now points to a different location")
+                await asyncio.to_thread(path.unlink, missing_ok=True)
+            except (OSError, RuntimeError) as exc:
+                raise HTTPException(
+                    status_code=409, detail="Could not remove the file from linked-drive trash"
+                ) from exc
+            with contextlib.suppress(OSError):
+                path.parent.rmdir()
+        self._unlink_on_disk(row)
 
     @staticmethod
     def _unlink_on_disk(row: LibraryFile) -> None:
         """Best-effort cleanup of the file, thumbnail and photos (#3077) on disk."""
-        for rel in (row.file_path, row.thumbnail_path):
+        for rel in (None if row.is_external else row.file_path, row.thumbnail_path):
             abs_path = _to_absolute_path(rel)
             if abs_path is None:
                 continue
@@ -380,15 +520,33 @@ class LibraryTrashService:
     # ---- User-facing trash ops ----------------------------------------
 
     async def restore(self, db: AsyncSession, file: LibraryFile) -> LibraryFile:
-        """Clear ``deleted_at`` so the file reappears in listings."""
+        """Move a linked file back and make the row visible again."""
+        trash_path = Path(file.trash_path) if file.trash_path else None
+        if trash_path is not None:
+            original, _ = await self._linked_location(db, file)
+            try:
+                await asyncio.to_thread(self._restore_external, trash_path, original)
+            except FileExistsError as exc:
+                raise HTTPException(status_code=409, detail="A file already exists at the original location") from exc
+            except (OSError, RuntimeError) as exc:
+                raise HTTPException(status_code=409, detail="Could not restore the file to the linked drive") from exc
+        file.trash_path = None
         file.deleted_at = None
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception:
+            if trash_path is not None:
+                await asyncio.to_thread(self._restore_external, original, trash_path)
+            raise
+        if trash_path is not None:
+            with contextlib.suppress(OSError):
+                trash_path.parent.rmdir()
         await db.refresh(file)
         return file
 
     async def hard_delete_now(self, db: AsyncSession, file: LibraryFile) -> None:
         """Bypass retention and delete this trashed file + its bytes immediately."""
-        self._unlink_on_disk(file)
+        await self._remove_trashed_bytes(file)
         await delete_dependent_variants(db, [file.id])
         await release_queue_references(db, [file.id])
         await db.delete(file)

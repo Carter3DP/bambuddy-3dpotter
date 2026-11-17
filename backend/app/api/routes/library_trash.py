@@ -249,6 +249,7 @@ async def get_trash_settings(
     auto = await library_trash_service.get_auto_purge_settings(db)
     return TrashSettings(
         retention_days=retention,
+        external_trash_folder=await library_trash_service.get_trash_folder(db),
         auto_purge_enabled=auto["enabled"],
         auto_purge_days=auto["days"],
         auto_purge_include_never_printed=auto["include_never_printed"],
@@ -266,6 +267,8 @@ async def update_trash_settings(
             status_code=400,
             detail=f"retention_days must be between {MIN_RETENTION_DAYS} and {MAX_RETENTION_DAYS}",
         )
+    if body.external_trash_folder is not None:
+        await library_trash_service.set_trash_folder(db, body.external_trash_folder)
     saved_retention = await library_trash_service.set_retention_days(db, body.retention_days)
     saved_auto = await library_trash_service.set_auto_purge_settings(
         db,
@@ -275,6 +278,7 @@ async def update_trash_settings(
     )
     return TrashSettings(
         retention_days=saved_retention,
+        external_trash_folder=await library_trash_service.get_trash_folder(db),
         auto_purge_enabled=saved_auto["enabled"],
         auto_purge_days=saved_auto["days"],
         auto_purge_include_never_printed=saved_auto["include_never_printed"],

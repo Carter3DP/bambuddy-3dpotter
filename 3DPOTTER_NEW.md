@@ -54,6 +54,6 @@ Enable **Workflow → Default Print Options → Prefer lowest-weight AMS spool**
 
 Update this file in the same pull request whenever a fork feature is added or its behavior changes. Extend the relevant section or add one for a new feature. Include where to find the feature, its default behavior, and any setup or upgrade steps users need.
 
-## Linked file deletion
+## Linked-drive trash
 
-Deleting files in File Manager also removes them from writable linked drives. Linked files bypass the trash. File Manager reports read-only or disk deletion errors and keeps those files listed. Removing a linked folder still disconnects it from the library without deleting the folder or its contents from the drive.
+In **Settings → General → File Manager**, set the trash folder name (default `.bambuddy-trash`) and how many days deleted files should stay in trash (default 30). Bambuddy creates the folder on each writable linked drive when first needed. Single-file deletes, bulk deletes, and File Manager auto-purge move eligible linked files there. Restore returns a file to its original location, and the trash sweeper removes expired files. Read-only shares cannot be modified. Removing a linked folder disconnects it without deleting its contents. Restore or empty that folder’s trash before disconnecting it.

@@ -120,7 +120,7 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
               <li>{t('libraryPurge.effect1')}</li>
               <li>{t('libraryPurge.effect2')}</li>
               <li>{t('libraryPurge.effect3')}</li>
-              <li>{t('libraryPurge.effect4')}</li>
+              <li>{t('libraryPurge.linkedTrash', 'Files on writable linked drives go to those drives’ trash folders. Read-only linked folders are skipped.')}</li>
             </ul>
           </div>
 

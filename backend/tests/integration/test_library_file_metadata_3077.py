@@ -292,13 +292,16 @@ class TestPhotos:
         library_file = await file_factory(
             is_external=True, folder_id=folder_id, file_path=str(share / "part.stl"), file_type="stl"
         )
+        (share / "part.stl").write_bytes(b"mesh")
         upload = await _upload(async_client, library_file.id)
         assert upload.status_code == 200
         photos_dir = library_photos_dir(library_file.id)
 
         response = await async_client.delete(f"/api/v1/library/files/{library_file.id}")
         assert response.status_code == 200
-        assert response.json()["trashed"] is False
+        assert response.json()["trashed"] is True
+        assert photos_dir.is_dir()
+        assert (await async_client.delete(f"/api/v1/library/trash/{library_file.id}")).status_code == 200
         assert not photos_dir.exists()
 
 
@@ -329,16 +332,15 @@ class TestPhotoDirectoryCleanup:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_bulk_delete_removes_photo_dir_of_hard_deleted_file(
+    async def test_bulk_delete_preserves_photos_in_trash(
         self, async_client: AsyncClient, file_factory, isolated_storage, writable_share
     ):
-        # External files bypass the trash, so bulk delete hard-deletes them;
-        # a managed file is only soft-deleted and keeps its photos until the
-        # sweeper runs.
+        # Both files keep their photos until permanently deleted.
         folder_id, share = writable_share
         external = await file_factory(
             is_external=True, folder_id=folder_id, file_path=str(share / "ext.stl"), file_type="stl"
         )
+        (share / "ext.stl").write_bytes(b"mesh")
         managed = await file_factory()
         for library_file in (external, managed):
             assert (await _upload(async_client, library_file.id)).status_code == 200
@@ -349,7 +351,7 @@ class TestPhotoDirectoryCleanup:
         )
         assert response.status_code == 200
         assert response.json()["deleted_files"] == 2
-        assert not library_photos_dir(external.id).exists()
+        assert library_photos_dir(external.id).is_dir()
         assert library_photos_dir(managed.id).is_dir()
 
     @pytest.mark.asyncio
