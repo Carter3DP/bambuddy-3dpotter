@@ -866,22 +866,27 @@ class TestMissingFilamentForStart:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("weights", "has_ams", "backup", "saved_mapping", "candidate_overrides", "enabled", "expected"),
+    ("weights", "has_ams", "backup", "saved_mapping", "candidate_overrides", "enabled", "expected", "ams_remaining"),
     [
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, True, [2]),
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, False, [0]),
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_color": "FF0000FF"}, True, [1]),
-        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_info_idx": "other"}, True, [1]),
-        ({0: 300, 1: 100, 2: 0}, True, True, [0], {}, True, [1]),
-        ({0: 300, 1: 300}, True, True, [0], {}, True, [0]),
-        ({1: 100, 2: 50}, True, True, [0], {}, True, [0]),
-        ({0: 300, 1: 100}, True, False, [0], {}, True, [0]),
-        ({0: 300, 1: 100}, False, True, [0], {}, True, [0]),
-        ({0: 300, 1: 100}, True, True, [2], {}, True, [0]),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, True, [2], (-1, -1, -1)),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {}, False, [0], (-1, -1, -1)),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_color": "FF0000FF"}, True, [1], (-1, -1, -1)),
+        ({0: 300, 1: 100, 2: 50}, True, True, [0], {"tray_info_idx": "other"}, True, [1], (-1, -1, -1)),
+        ({0: 300, 1: 100, 2: 0}, True, True, [0], {}, True, [1], (-1, -1, -1)),
+        ({0: 300, 1: 300}, True, True, [0], {}, True, [0], (-1, -1, -1)),
+        ({1: 100, 2: 50}, True, True, [0], {}, True, [0], (-1, -1, -1)),
+        ({0: 300, 1: 100}, True, False, [0], {}, True, [0], (-1, -1, -1)),
+        ({0: 300, 1: 100}, False, True, [0], {}, True, [0], (-1, -1, -1)),
+        ({0: 300, 1: 100}, True, True, [2], {}, True, [0], (-1, -1, -1)),
+        ({}, True, True, [0], {}, True, [2], (75, 25, 10)),
+        ({0: 300}, True, True, [0], {}, True, [1], (75, 25, -1)),
+        ({0: 100, 1: 300}, True, True, [0], {}, True, [0], (75, 25, -1)),
+        ({2: 0}, True, True, [0], {}, True, [1], (75, 25, 10)),
+        ({}, True, True, [0], {}, True, [0], (-1, 25, 10)),
     ],
 )
 async def test_saved_slicer_pick_prefers_lighter_equivalent_ams_spool(
-    weights, has_ams, backup, saved_mapping, candidate_overrides, enabled, expected
+    weights, has_ams, backup, saved_mapping, candidate_overrides, enabled, expected, ams_remaining
 ):
     from backend.app.services.bambu_mqtt import PrinterState
 
@@ -892,6 +897,8 @@ async def test_saved_slicer_pick_prefers_lighter_equivalent_ams_spool(
     status = PrinterState()
     status.ams_filament_backup = backup
     trays = [{"id": str(i), "tray_type": "PLA", "tray_color": "010203FF", "tray_info_idx": "profile"} for i in range(3)]
+    for tray, remain in zip(trays, ams_remaining, strict=True):
+        tray["remain"] = remain
     trays[2].update(candidate_overrides)
     status.raw_data = {"ams": [{"id": "0", "tray": trays}] if has_ams else []}
     db = AsyncMock()

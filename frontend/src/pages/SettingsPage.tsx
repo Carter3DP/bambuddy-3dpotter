@@ -5344,7 +5344,7 @@ export function SettingsPage() {
                     {t('settings.preferLighterSlicerSpools', 'Prefer lowest-weight AMS spool')}
                   </label>
                   <p id="prefer-lighter-slicer-spools-help" className="text-xs text-bambu-gray mt-0.5">
-                    {t('settings.preferLighterSlicerSpoolsHelp', 'For queued prints with a saved slicer selection, use an equivalent AMS spool with less filament remaining when both weights are known. Turn this off to keep the slicer selection.')}
+                    {t('settings.preferLighterSlicerSpoolsHelp', 'For queued prints with a saved slicer selection, use an equivalent AMS spool with less filament remaining when inventory or AMS readings can be compared. Requires AMS Filament Backup unless the printer does not report its state. Turn this off to keep the slicer selection.')}
                   </p>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer shrink-0">
