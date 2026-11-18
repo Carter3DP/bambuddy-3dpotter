@@ -84,22 +84,37 @@ async def test_delete_file_moves_to_trash(async_client: AsyncClient, file_factor
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_delete_external_file_hard_deletes(async_client: AsyncClient, file_factory, db_session):
-    """External files skip the trash and their bytes are removed."""
+async def test_external_trash_moves_and_restores_file(async_client: AsyncClient, file_factory, db_session):
     from backend.app.models.library import LibraryFile
 
     f = await file_factory(is_external=True)
-    file_id = f.id
+    file_id, folder_id = f.id, f.folder_id
     disk_file = Path(f.file_path)
     response = await async_client.delete(f"/api/v1/library/files/{file_id}")
     assert response.status_code == 200
-    assert response.json()["trashed"] is False
+    assert response.json()["trashed"] is True
     assert not disk_file.exists()
 
-    # The route commits in its own session; expire ours so get() re-reads.
-    db_session.expire_all()
-    missing = await db_session.get(LibraryFile, file_id)
-    assert missing is None
+    row = await db_session.get(LibraryFile, file_id, populate_existing=True)
+    trash_path = Path(row.trash_path)
+    assert trash_path.parent.parent == disk_file.parent / ".bambuddy-trash"
+    assert trash_path.read_bytes() == b"linked file"
+
+    scan = await async_client.post(f"/api/v1/library/folders/{folder_id}/scan")
+    assert scan.status_code == 200
+    assert scan.json()["added"] == 0
+
+    disk_file.write_bytes(b"replacement")
+    conflict = await async_client.post(f"/api/v1/library/trash/{file_id}/restore")
+    assert conflict.status_code == 409
+    assert disk_file.read_bytes() == b"replacement"
+    assert trash_path.exists()
+
+    disk_file.unlink()
+    restored = await async_client.post(f"/api/v1/library/trash/{file_id}/restore")
+    assert restored.status_code == 200
+    assert disk_file.read_bytes() == b"linked file"
+    assert not trash_path.exists()
 
 
 @pytest.mark.asyncio
@@ -132,13 +147,13 @@ async def test_bulk_delete_keeps_read_only_linked_files(async_client: AsyncClien
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_external_file_unlink_failure_keeps_library_entry(async_client: AsyncClient, file_factory, db_session):
+async def test_external_file_move_failure_keeps_library_entry(async_client: AsyncClient, file_factory, db_session):
     from backend.app.models.library import LibraryFile
 
     library_file = await file_factory(is_external=True)
     file_id = library_file.id
     disk_file = Path(library_file.file_path)
-    # Simulate a path that can no longer be unlinked as a file.
+    # Simulate a path that can no longer be moved as a regular file.
     disk_file.unlink()
     disk_file.mkdir()
     response = await async_client.delete(f"/api/v1/library/files/{file_id}")
@@ -292,18 +307,51 @@ async def test_purge_execute_moves_to_trash(async_client: AsyncClient, file_fact
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_purge_skips_external_files(async_client: AsyncClient, file_factory, db_session):
-    """External files are never eligible for purge, regardless of age."""
-    long_ago = datetime.now(timezone.utc) - timedelta(days=300)
-    ext = await file_factory(is_external=True)
-    ext.created_at = long_ago
+async def test_auto_purge_uses_configured_external_trash_and_retention(
+    async_client: AsyncClient, file_factory, db_session
+):
+    from backend.app.models.library import LibraryFolder
+    from backend.app.services.library_trash import library_trash_service
+    from backend.app.utils.local_time import utcnow_naive
+
+    settings = await async_client.put(
+        "/api/v1/library/trash/settings",
+        json={"retention_days": 5, "external_trash_folder": "Print Trash", "auto_purge_enabled": True},
+    )
+    assert settings.status_code == 200
+    assert settings.json()["external_trash_folder"] == "Print Trash"
+    assert settings.json()["retention_days"] == 5
+
+    f = await file_factory(is_external=True)
+    readonly = await file_factory(is_external=True)
+    folder = await db_session.get(LibraryFolder, readonly.folder_id)
+    folder.external_readonly = True
+    f.created_at = readonly.created_at = utcnow_naive() - timedelta(days=300)
+    original = Path(f.file_path)
     await db_session.commit()
 
-    resp = await async_client.get(
-        "/api/v1/library/purge/preview",
-        params={"older_than_days": 90, "include_never_printed": True},
-    )
-    assert resp.json()["count"] == 0
+    preview = await async_client.get("/api/v1/library/purge/preview", params={"older_than_days": 90})
+    assert preview.json()["count"] == 1
+    assert await library_trash_service._maybe_run_auto_purge(db_session) == 1
+    assert not original.exists()
+    assert Path(readonly.file_path).exists()
+    trash_path = Path(f.trash_path)
+    assert trash_path.parent.parent == original.parent / "Print Trash"
+    assert trash_path.is_file()
+
+    f.deleted_at = utcnow_naive() - timedelta(days=4)
+    await db_session.commit()
+    assert await library_trash_service._sweep(db_session) == 0
+    assert trash_path.is_file()
+
+    # Sweeping must only remove the trashed copy, even when a new file uses
+    # its original pathname.
+    original.write_bytes(b"new file")
+    f.deleted_at = utcnow_naive() - timedelta(days=6)
+    await db_session.commit()
+    assert await library_trash_service._sweep(db_session) == 1
+    assert not trash_path.exists()
+    assert original.read_bytes() == b"new file"
 
 
 @pytest.mark.asyncio
@@ -541,7 +589,9 @@ async def test_hard_delete_cancels_queued_items_and_names_the_file(
 
     response = await async_client.delete(f"/api/v1/library/files/{f.id}")
     assert response.status_code == 200
-    assert response.json()["trashed"] is False
+    assert response.json()["trashed"] is True
+    purged = await async_client.delete(f"/api/v1/library/trash/{f.id}")
+    assert purged.status_code == 200
 
     item = await _reload(db_session, waiting)
     assert item is not None, "the cascade must not take the row with the file"
@@ -562,6 +612,7 @@ async def test_hard_delete_leaves_finished_and_running_items_their_outcome(
     running = await queue_factory(f, status="printing")
 
     await async_client.delete(f"/api/v1/library/files/{f.id}")
+    assert (await async_client.delete(f"/api/v1/library/trash/{f.id}")).status_code == 200
 
     for item, expected in ((done, "completed"), (running, "printing")):
         row = await _reload(db_session, item)

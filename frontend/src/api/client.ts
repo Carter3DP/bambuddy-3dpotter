@@ -9001,6 +9001,7 @@ export interface LibraryPurgePreview {
 
 export interface LibraryTrashSettings {
   retention_days: number;
+  external_trash_folder?: string;
   auto_purge_enabled: boolean;
   auto_purge_days: number;
   auto_purge_include_never_printed: boolean;

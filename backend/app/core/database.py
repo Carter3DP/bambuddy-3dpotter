@@ -4676,6 +4676,7 @@ async def _run_migrations(conn):
         conn,
         "CREATE INDEX IF NOT EXISTS ix_library_files_deleted_at ON library_files(deleted_at)",
     )
+    await _safe_execute(conn, "ALTER TABLE library_files ADD COLUMN trash_path TEXT")
 
     # Legacy SQLite installs created `settings` without a UNIQUE constraint on `key`,
     # so `INSERT OR IGNORE` below silently degrades to a plain INSERT and dupes rows on

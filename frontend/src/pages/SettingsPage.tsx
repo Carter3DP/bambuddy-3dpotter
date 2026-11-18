@@ -746,11 +746,14 @@ export function SettingsPage() {
   const updateTrashSettingsMutation = useMutation({
     mutationFn: (body: {
       retention_days: number;
+      external_trash_folder?: string;
       auto_purge_enabled: boolean;
       auto_purge_days: number;
       auto_purge_include_never_printed: boolean;
     }) => api.updateLibraryTrashSettings(body),
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['library-trash-settings'], saved);
+      queryClient.invalidateQueries({ queryKey: ['library-trash'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-settings'] });
       showToast(t('settings.toast.settingsSaved'), 'success');
     },
@@ -759,6 +762,7 @@ export function SettingsPage() {
 
   const saveTrashSettings = (patch: Partial<{
     retention_days: number;
+    external_trash_folder: string;
     auto_purge_enabled: boolean;
     auto_purge_days: number;
     auto_purge_include_never_printed: boolean;
@@ -2608,6 +2612,54 @@ export function SettingsPage() {
                   even manually. */}
               {canPurge && trashSettings && (
                 <div className="border-t border-bambu-dark-tertiary pt-3 mt-3 space-y-3">
+                  <div>
+                    <label htmlFor="library-external-trash-folder" className="block text-sm text-bambu-gray mb-1">
+                      {t('libraryAutoPurge.trashFolder', 'Trash folder')}
+                    </label>
+                    <input
+                      id="library-external-trash-folder"
+                      key={trashSettings.external_trash_folder}
+                      defaultValue={trashSettings.external_trash_folder ?? '.bambuddy-trash'}
+                      maxLength={200}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                      onBlur={(e) => {
+                        const name = e.target.value.trim();
+                        if (name && name !== (trashSettings.external_trash_folder ?? '.bambuddy-trash')) {
+                          saveTrashSettings({ external_trash_folder: name });
+                        } else if (!name) {
+                          e.target.value = trashSettings.external_trash_folder ?? '.bambuddy-trash';
+                        }
+                      }}
+                      className="w-full max-w-xs px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                    <p className="text-xs text-bambu-gray mt-1">
+                      {t('libraryAutoPurge.trashFolderHelp', 'Created on each writable linked drive. File Manager deletions and auto-purge use this folder.')}
+                    </p>
+                  </div>
+                  <div>
+                    <label htmlFor="library-trash-retention-days" className="block text-sm text-bambu-gray mb-1">
+                      {t('libraryAutoPurge.trashRetention', 'Keep deleted files in trash (days)')}
+                    </label>
+                    <input
+                      id="library-trash-retention-days"
+                      key={trashSettings.retention_days}
+                      type="number"
+                      min={1}
+                      max={365}
+                      defaultValue={trashSettings.retention_days}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                      onBlur={(e) => {
+                        const days = e.target.valueAsNumber;
+                        if (!Number.isInteger(days) || days < 1 || days > 365) {
+                          e.target.value = String(trashSettings.retention_days);
+                        } else if (days !== trashSettings.retention_days) {
+                          saveTrashSettings({ retention_days: days });
+                        }
+                      }}
+                      className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                    />
+                  </div>
+
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-white">{t('libraryAutoPurge.enableLabel')}</p>

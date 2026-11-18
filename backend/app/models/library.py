@@ -191,6 +191,7 @@ class LibraryFile(Base):
     # trash and should not appear in normal listings. A background sweeper
     # hard-deletes rows whose deleted_at is older than the retention window.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    trash_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

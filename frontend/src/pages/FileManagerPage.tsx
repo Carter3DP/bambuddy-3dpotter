@@ -4275,7 +4275,7 @@ export function FileManagerPage() {
               : (deleteConfirm.type === 'bulk' ? selectedFiles : [deleteConfirm.id]).some(
                   (id) => selectableFiles.get(id)?.is_external,
                 )
-              ? t('fileManager.deleteExternalFilesConfirm', 'Files on writable linked drives will be permanently deleted from disk. Continue?')
+              ? t('fileManager.deleteExternalFilesConfirm', 'Files on writable linked drives will move to the drive’s trash folder. Continue?')
               : deleteConfirm.type === 'bulk'
               ? t('fileManager.deleteFilesConfirm', { count: deleteConfirm.count })
               : t('fileManager.deleteFileConfirm')
