@@ -14,7 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile
+from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.print_log import PrintLogEntry
 from backend.app.models.user import User
 
@@ -114,21 +114,40 @@ async def test_deleting_a_printer_with_its_archives_clears_their_log_entries(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_deleting_a_library_file_clears_the_archives_printed_from_it(
-    async_client: AsyncClient, db_session, printer_factory, archive_factory
+    async_client: AsyncClient, db_session, printer_factory, archive_factory, tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("BAMBUDDY_EXTERNAL_ROOTS", str(tmp_path))
+    folder = LibraryFolder(name="Share", is_external=True, external_path=str(tmp_path), external_readonly=False)
+    db_session.add(folder)
+    await db_session.flush()
+    disk_file = tmp_path / "ext.3mf"
+    disk_file.write_bytes(b"x")
     library_file = LibraryFile(
-        filename="ext.3mf", file_path="/mnt/share/ext.3mf", file_type="3mf", file_size=1, is_external=True
+        filename=disk_file.name,
+        file_path=str(disk_file),
+        file_type="3mf",
+        file_size=1,
+        is_external=True,
+        folder_id=folder.id,
     )
     db_session.add(library_file)
     await db_session.commit()
+    file_id = library_file.id
     printer = await printer_factory()
-    archive = await archive_factory(printer.id, library_file_id=library_file.id, with_run=False)
+    archive = await archive_factory(printer.id, library_file_id=file_id, with_run=False)
+    archive_id = archive.id
 
-    response = await async_client.delete(f"/api/v1/library/files/{library_file.id}")
+    response = await async_client.delete(f"/api/v1/library/files/{file_id}")
 
     assert response.status_code == 200, response.text
-    assert await _reload(db_session, LibraryFile, library_file.id) is None
-    assert (await _reload(db_session, PrintArchive, archive.id)).library_file_id is None
+    assert response.json()["trashed"] is True
+    assert (await _reload(db_session, PrintArchive, archive_id)).library_file_id == file_id
+
+    response = await async_client.delete(f"/api/v1/library/trash/{file_id}")
+
+    assert response.status_code == 200, response.text
+    assert await _reload(db_session, LibraryFile, file_id) is None
+    assert (await _reload(db_session, PrintArchive, archive_id)).library_file_id is None
 
 
 @pytest.mark.asyncio

@@ -280,7 +280,7 @@ class LibraryTrashService:
 
     async def trash_file(self, db: AsyncSession, file: LibraryFile, *, folder_name: str | None = None) -> None:
         """Trash a file and persist the location of any bytes moved on a drive."""
-        destination = None
+        source = destination = None
         if file.is_external:
             source, root = await self._linked_location(db, file)
             if folder_name is None:
@@ -295,7 +295,7 @@ class LibraryTrashService:
         try:
             await db.commit()
         except Exception:
-            if destination is not None:
+            if destination is not None and source is not None:
                 await asyncio.to_thread(self._restore_external, destination, source)
                 with contextlib.suppress(OSError):
                     destination.parent.rmdir()
@@ -521,6 +521,7 @@ class LibraryTrashService:
 
     async def restore(self, db: AsyncSession, file: LibraryFile) -> LibraryFile:
         """Move a linked file back and make the row visible again."""
+        original = None
         trash_path = Path(file.trash_path) if file.trash_path else None
         if trash_path is not None:
             original, _ = await self._linked_location(db, file)
@@ -535,7 +536,7 @@ class LibraryTrashService:
         try:
             await db.commit()
         except Exception:
-            if trash_path is not None:
+            if trash_path is not None and original is not None:
                 await asyncio.to_thread(self._restore_external, original, trash_path)
             raise
         if trash_path is not None:

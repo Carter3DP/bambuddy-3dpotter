@@ -5680,7 +5680,7 @@ async def delete_file(
     file = result.scalar_one_or_none()
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    if not can_modify_all and file.created_by_id != user.id:
+    if not can_modify_all and (user is None or file.created_by_id != user.id):
         raise HTTPException(status_code=403, detail="You can only delete your own files")
 
     await library_trash_service.trash_file(db, file)
