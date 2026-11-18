@@ -57,6 +57,18 @@ async def file_factory(db_session):
     return _create_file
 
 
+@pytest.fixture
+async def writable_share(db_session, tmp_path_factory, monkeypatch):
+    from backend.app.models.library import LibraryFolder
+
+    share = tmp_path_factory.mktemp("linked_library")
+    monkeypatch.setenv("BAMBUDDY_EXTERNAL_ROOTS", str(share))
+    folder = LibraryFolder(name=share.name, is_external=True, external_path=str(share), external_readonly=False)
+    db_session.add(folder)
+    await db_session.commit()
+    return folder.id, share
+
+
 async def _upload(async_client: AsyncClient, file_id: int, name: str = "result.jpg", content: bytes | None = None):
     return await async_client.post(
         f"/api/v1/library/files/{file_id}/photos",
@@ -274,9 +286,12 @@ class TestPhotos:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_external_file_delete_removes_photo_dir(
-        self, async_client: AsyncClient, file_factory, isolated_storage
+        self, async_client: AsyncClient, file_factory, isolated_storage, writable_share
     ):
-        library_file = await file_factory(is_external=True, file_path="/mnt/nas/part.stl", file_type="stl")
+        folder_id, share = writable_share
+        library_file = await file_factory(
+            is_external=True, folder_id=folder_id, file_path=str(share / "part.stl"), file_type="stl"
+        )
         upload = await _upload(async_client, library_file.id)
         assert upload.status_code == 200
         photos_dir = library_photos_dir(library_file.id)
@@ -315,12 +330,15 @@ class TestPhotoDirectoryCleanup:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_bulk_delete_removes_photo_dir_of_hard_deleted_file(
-        self, async_client: AsyncClient, file_factory, isolated_storage
+        self, async_client: AsyncClient, file_factory, isolated_storage, writable_share
     ):
         # External files bypass the trash, so bulk delete hard-deletes them;
         # a managed file is only soft-deleted and keeps its photos until the
         # sweeper runs.
-        external = await file_factory(is_external=True, file_path="/mnt/nas/ext.stl", file_type="stl")
+        folder_id, share = writable_share
+        external = await file_factory(
+            is_external=True, folder_id=folder_id, file_path=str(share / "ext.stl"), file_type="stl"
+        )
         managed = await file_factory()
         for library_file in (external, managed):
             assert (await _upload(async_client, library_file.id)).status_code == 200

@@ -53,3 +53,7 @@ Enable **Workflow → Default Print Options → Prefer lowest-weight AMS spool**
 ## Maintaining this file
 
 Update this file in the same pull request whenever a fork feature is added or its behavior changes. Extend the relevant section or add one for a new feature. Include where to find the feature, its default behavior, and any setup or upgrade steps users need.
+
+## Linked file deletion
+
+Deleting files in File Manager also removes them from writable linked drives. Linked files bypass the trash. File Manager reports read-only or disk deletion errors and keeps those files listed. Removing a linked folder still disconnects it from the library without deleting the folder or its contents from the drive.

@@ -2315,13 +2315,19 @@ export function FileManagerPage() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: (fileIds: number[]) => api.bulkDeleteLibrary(fileIds, []),
-    onSuccess: (_, fileIds) => {
+    onSuccess: ({ deleted_files, failed_files }) => {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-folders'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
-      showToast(t('fileManager.toast.filesDeleted', { count: fileIds.length }), 'success');
-      setSelectedFiles([]);
+      if (deleted_files > 0) {
+        showToast(t('fileManager.toast.filesDeleted', { count: deleted_files }), 'success');
+      }
+      const failures = Object.entries(failed_files ?? {});
+      if (failures.length) {
+        showToast([...new Set(failures.map(([, reason]) => reason))].join('\n'), 'error');
+      }
+      setSelectedFiles(failures.map(([id]) => Number(id)));
       setDeleteConfirm(null);
     },
     onError: (error: Error) => {
@@ -4266,6 +4272,10 @@ export function FileManagerPage() {
           message={
             deleteConfirm.type === 'folder'
               ? t('fileManager.deleteFolderConfirm')
+              : (deleteConfirm.type === 'bulk' ? selectedFiles : [deleteConfirm.id]).some(
+                  (id) => selectableFiles.get(id)?.is_external,
+                )
+              ? t('fileManager.deleteExternalFilesConfirm', 'Files on writable linked drives will be permanently deleted from disk. Continue?')
               : deleteConfirm.type === 'bulk'
               ? t('fileManager.deleteFilesConfirm', { count: deleteConfirm.count })
               : t('fileManager.deleteFileConfirm')
