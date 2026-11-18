@@ -2014,7 +2014,11 @@ async def scan_external_folder(
     if not ext_path.exists() or not ext_path.is_dir():
         raise HTTPException(status_code=400, detail=f"External path is not accessible: {folder.external_path}")
 
-    if (ext_path / TRASH_MARKER).is_file():
+    def has_trash_marker(directory: Path) -> bool:
+        marker = directory / TRASH_MARKER  # SEC-PATH-OK: TRASH_MARKER is a fixed filename; symlinks are ignored below.
+        return not directory.is_symlink() and not marker.is_symlink() and marker.is_file()
+
+    if has_trash_marker(ext_path):
         raise HTTPException(status_code=400, detail="Cannot scan a linked-drive trash folder")
 
     # Collect all existing child external subfolder IDs (single query)
@@ -2073,7 +2077,13 @@ async def scan_external_folder(
     folder_mtimes: dict[int, datetime] = {}
 
     for dirpath, dirnames, filenames in os.walk(ext_path):
-        dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d / TRASH_MARKER).is_file()]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not has_trash_marker(
+                Path(dirpath) / name  # SEC-PATH-OK: os.walk supplies immediate child names; helper skips symlinks.
+            )
+        ]
         # Filter hidden directories unless configured
         if not folder.external_show_hidden:
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
