@@ -57,3 +57,5 @@ Update this file in the same pull request whenever a fork feature is added or it
 ## Linked-drive trash
 
 In **Settings → General → File Manager**, set the trash folder name (default `.bambuddy-trash`) and how many days deleted files should stay in trash (default 30). Bambuddy creates the folder on each writable linked drive when first needed. Single-file deletes, bulk deletes, and File Manager auto-purge move eligible linked files there. Restore returns a file to its original location, and the trash sweeper removes expired files. Read-only shares cannot be modified. Removing a linked folder disconnects it without deleting its contents. Restore or empty that folder’s trash before disconnecting it.
+
+The trash retention field uses the shared number input and saves valid changes immediately, including changes made with its increment and decrement arrows.

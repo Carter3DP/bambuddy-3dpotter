@@ -88,6 +88,35 @@ describe('SettingsPage fields that were never saved', () => {
     await waitFor(() => expect(saves.at(-1)).toMatchObject({ prefer_lighter_slicer_spools: true }), { timeout: 3000 });
   });
 
+  it('saves trash retention changes while the number field stays focused', async () => {
+    let trash = {
+      retention_days: 30,
+      external_trash_folder: '.bambuddy-trash',
+      auto_purge_enabled: true,
+      auto_purge_days: 90,
+      auto_purge_include_never_printed: true,
+    };
+    const trashSaves: Record<string, unknown>[] = [];
+    server.use(
+      http.get('/api/v1/library/trash/settings', () => HttpResponse.json(trash)),
+      http.put('/api/v1/library/trash/settings', async ({ request }) => {
+        const body = (await request.json()) as typeof trash;
+        trashSaves.push(body);
+        trash = { ...trash, ...body };
+        return HttpResponse.json(trash);
+      }),
+    );
+    await open();
+    const field = await screen.findByLabelText('Keep deleted files in trash (days)');
+    field.focus();
+    fireEvent.change(field, { target: { value: '31' } });
+    await waitFor(() => expect(trashSaves.at(-1)).toMatchObject({ retention_days: 31 }));
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: '30' } });
+    await waitFor(() => expect(trashSaves.at(-1)).toMatchObject({ retention_days: 30 }));
+    expect(field).toHaveFocus();
+  });
+
   it('saves the Docker compose directory', async () => {
     const user = await open();
 
