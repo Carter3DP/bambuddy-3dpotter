@@ -90,6 +90,10 @@ async def test_external_trash_moves_and_restores_file(async_client: AsyncClient,
     f = await file_factory(is_external=True)
     file_id, folder_id = f.id, f.folder_id
     disk_file = Path(f.file_path)
+    trash_folder = disk_file.parent / ".bambuddy-trash"
+    trash_folder.mkdir()
+    existing_file = trash_folder / "already-here.3mf"
+    existing_file.write_bytes(b"existing content")
     response = await async_client.delete(f"/api/v1/library/files/{file_id}")
     assert response.status_code == 200
     assert response.json()["trashed"] is True
@@ -99,6 +103,7 @@ async def test_external_trash_moves_and_restores_file(async_client: AsyncClient,
     trash_path = Path(row.trash_path)
     assert trash_path.parent.parent == disk_file.parent / ".bambuddy-trash"
     assert trash_path.read_bytes() == b"linked file"
+    assert existing_file.read_bytes() == b"existing content"
 
     scan = await async_client.post(f"/api/v1/library/folders/{folder_id}/scan")
     assert scan.status_code == 200
