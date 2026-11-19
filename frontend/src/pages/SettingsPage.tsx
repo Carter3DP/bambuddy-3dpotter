@@ -2640,22 +2640,13 @@ export function SettingsPage() {
                     <label htmlFor="library-trash-retention-days" className="block text-sm text-bambu-gray mb-1">
                       {t('libraryAutoPurge.trashRetention', 'Keep deleted files in trash (days)')}
                     </label>
-                    <input
+                    <NumberInput
                       id="library-trash-retention-days"
-                      key={trashSettings.retention_days}
-                      type="number"
                       min={1}
                       max={365}
-                      defaultValue={trashSettings.retention_days}
-                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-                      onBlur={(e) => {
-                        const days = e.target.valueAsNumber;
-                        if (!Number.isInteger(days) || days < 1 || days > 365) {
-                          e.target.value = String(trashSettings.retention_days);
-                        } else if (days !== trashSettings.retention_days) {
-                          saveTrashSettings({ retention_days: days });
-                        }
-                      }}
+                      value={trashSettings.retention_days}
+                      fallback={30}
+                      onChange={(days) => saveTrashSettings({ retention_days: days })}
                       className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                   </div>
