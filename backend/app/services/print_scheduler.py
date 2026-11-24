@@ -36,6 +36,7 @@ from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.schemas.working_hours import WORKING_HOURS_SNAPSHOT_KEY, WorkingHours, WorkingHoursQueueSnapshot
 from backend.app.services import drying_preflight, kprofile_drift, print_dispatch_context, stock_forecast
 from backend.app.services.bambu_ftp import (
+    BambuFTPClient,
     FtpFailureKind,
     FtpFailureReport,
     UploadCancelled,
@@ -59,6 +60,7 @@ from backend.app.services.notification_service import notification_service
 from backend.app.services.print_cost_estimate import estimate_queue_source_cost
 from backend.app.services.printer_manager import (
     printer_manager,
+    printer_tray_layout,
     supports_airduct,
     supports_chamber_heater,
     supports_chamber_temp,
@@ -67,7 +69,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.queue_item_printer import drop_printer_resolved
 from backend.app.services.slot_nozzle import reports_two_nozzles
-from backend.app.services.smart_plug_manager import publish_plug_state, smart_plug_manager
+from backend.app.services.smart_plug_manager import is_monitor_only, publish_plug_state, smart_plug_manager
 from backend.app.services.spool_assignment_notifications import (
     _global_tray_from_assignment,
     _slot_label_from_global_tray,
@@ -93,11 +95,17 @@ from backend.app.utils.threemf_tools import (
     plate_bed_temperature,
     select_plate_gcode_name,
 )
+from backend.app.utils.tray_ids import (
+    TrayLayout,
+    is_ams_ht_id,
+    is_external_tray,
+    unit_label,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _ams_slot_label(ams_id: int, tray_id: int) -> str:
+def _ams_slot_label(ams_id: int, tray_id: int, layout: TrayLayout | None = None) -> str:
     """Human slot name for an assignment tuple, in the spelling already in use.
 
     Composed from the notification side's own pair rather than spelled out again
@@ -111,8 +119,11 @@ def _ams_slot_label(ams_id: int, tray_id: int) -> str:
     Naming the same slot two ways is its own defect once an alert and the
     Inventory page are meant to be talking about the same tray, so this defers
     rather than adding a fifth spelling.
+
+    ``layout`` is the printer's (``printer_tray_layout``): an H3C names its
+    per-hotend external inputs "Ext-n".
     """
-    return _slot_label_from_global_tray(_global_tray_from_assignment(ams_id, tray_id))
+    return _slot_label_from_global_tray(_global_tray_from_assignment(ams_id, tray_id, layout), layout)
 
 
 # Minimum seconds between low-filament checks. Matches the scheduler's idle
@@ -273,6 +284,20 @@ class _KeepWarmEntry:
 # manual or firmware-run dry is untouched.
 AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
 AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
+# A cycle whose timer stood still (#3478): the firmware took the command and
+# left the heater off, so dry_time stays put with dry_status Off. It tells
+# nothing about humidity, so it has its own counter; this many in a row
+# suspends the unit with a message that says the unit did not heat, not that
+# the threshold is too low.
+AUTO_DRY_MAX_NEVER_HEATED_CYCLES = 2
+
+
+def _never_heated(unit_state: dict[str, object]) -> int:
+    """Cycles in a row whose timer stood still on this unit (#3478)."""
+    count = unit_state.get("never_heated")
+    return count if isinstance(count, int) else 0
+
+
 # Sustained-humidity wait (#2518): an above-threshold streak is only
 # "continuous" if some pass observed it within the gap ceiling. A unit that
 # goes unobserved longer (print running, printer disconnected, sensor silent)
@@ -473,6 +498,8 @@ class _ModelCandidate:
     required_filament_types: str | None
     filament_overrides: str | None
     variant: "PrintQueueVariant | None" = None
+    # Nozzle diameter (mm) the file was sliced for, None when unknown (#3536).
+    sliced_nozzle: float | None = None
 
 
 def _sliced_for_model(archive, library_file) -> str | None:
@@ -482,6 +509,26 @@ def _sliced_for_model(archive, library_file) -> str | None:
     if library_file is not None and library_file.file_metadata:
         return library_file.file_metadata.get("sliced_for_model")
     return None
+
+
+def _sliced_nozzle(archive, library_file) -> float | None:
+    """Nozzle diameter (mm) a 3MF was sliced for, None when unknown (#3536).
+
+    Fail-safe: a missing, unparsable or non-positive value means "unknown", and
+    unknown never excludes a printer. Not rounded here; the tolerance lives in
+    ``_nozzle_mismatch_message``.
+    """
+    if archive is not None:
+        raw = archive.nozzle_diameter
+    elif library_file is not None and library_file.file_metadata:
+        raw = library_file.file_metadata.get("nozzle_diameter")
+    else:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _filament_constraints(candidate: _ModelCandidate) -> tuple[list[str] | None, list[dict] | None]:
@@ -570,6 +617,7 @@ def _candidates_for(item: PrintQueueItem) -> list[_ModelCandidate]:
                 sliced_for=_sliced_for_model(item.archive, item.library_file),
                 required_filament_types=item.required_filament_types,
                 filament_overrides=item.filament_overrides,
+                sliced_nozzle=_sliced_nozzle(item.archive, item.library_file),
             )
         ]
 
@@ -588,6 +636,7 @@ def _candidates_for(item: PrintQueueItem) -> list[_ModelCandidate]:
             required_filament_types=v.required_filament_types,
             filament_overrides=v.filament_overrides,
             variant=v,
+            sliced_nozzle=_sliced_nozzle(None, v.library_file),
         )
         for v in ordered
     ]
@@ -770,15 +819,16 @@ def _consumed_mapping_entries(mapping: list | None, required: list[dict] | None)
     return entries or None
 
 
-def _is_external_tray(tray_id) -> bool:
-    """True for an explicit external-spool selection (254/255), not for an
-    unresolved slot and not for an AMS tray."""
+def _is_external_tray(tray_id, rack: bool = False) -> bool:
+    """True for an explicit external-spool selection (254/255, and 247-253 on a
+    ``rack`` printer), not for an unresolved slot and not for an AMS tray."""
     if tray_id is None:
         return False
     try:
-        return int(tray_id) >= _EXTERNAL_TRAY_ID_MIN
+        value = int(tray_id)
     except (TypeError, ValueError):
         return False
+    return value >= _EXTERNAL_TRAY_ID_MIN or is_external_tray(value, rack)
 
 
 def _might_be_dual_nozzle(printer_model: str | None, status) -> bool:
@@ -807,7 +857,8 @@ def _might_be_dual_nozzle(printer_model: str | None, status) -> bool:
     if raw.get("ams_extruder_map"):
         return True
     vt_trays = raw.get("vt_tray") or []
-    return isinstance(vt_trays, list) and len(vt_trays) > 1
+    # Not a nozzle-rack printer's one external input per hotend (H3C, 247-255).
+    return isinstance(vt_trays, list) and len(vt_trays) > 1 and not TrayLayout.from_units(None, vt_trays).rack
 
 
 def _int_or(value, default: int) -> int:
@@ -858,15 +909,14 @@ async def _edited_since_loaded(db: AsyncSession, item: PrintQueueItem) -> bool:
     return True
 
 
-def _global_tray_id(ams_id: int, tray_id: int) -> int:
-    """Bambu's flat tray addressing: ``ams_id * 4 + tray_id`` for a four-slot
-    unit, and the bare unit id for an AMS-HT (ids from 128, one tray each).
+def _global_tray_id(ams_id: int, tray_id: int, layout: TrayLayout | None = None) -> int:
+    """Bambu Studio's global tray id (``utils.tray_ids``) of a slot on the printer ``layout`` describes.
 
     Mirrors the calculation in ``_build_loaded_filaments``, which is what
     produces the ids stored in ``PrintQueueItem.ams_mapping`` — the two must
     agree or a mapping cannot be read back against live tray telemetry.
     """
-    return ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+    return (layout or TrayLayout()).global_tray_id(ams_id, tray_id)
 
 
 def _used_global_tray_ids(item: PrintQueueItem | None) -> set[int] | None:
@@ -1106,6 +1156,28 @@ def _nozzle_mismatch_message(
     )
 
 
+def _wrong_nozzle_label(printer_name: str, status, sliced_nozzle: float | None) -> str | None:
+    """Label of a printer that cannot print a *sliced_nozzle* file, else None (#3536).
+
+    Used by the "Any <model>" pick, which before #3536 ignored the nozzle and
+    handed a 0.6 file to a 0.4 printer that then failed in ``_start_print``.
+    None means "fits or unknown" (no status, no sliced diameter, no reported
+    nozzles), so a printer is only ever skipped on a POSITIVE mismatch. The
+    decision stays in ``_nozzle_mismatch_message`` (same tolerance, same rack
+    rule as the start guard); this only formats the name for the wait reason.
+    """
+    if status is None:
+        return None
+    installed = _installed_nozzle_diameters(status)
+    rack = _rack_nozzle_diameters(status)
+    if _nozzle_mismatch_message(sliced_nozzle, installed, rack) is None:
+        return None
+    where = _format_diameters(installed) if installed else "no nozzle mounted"
+    if rack:
+        where += f", rack {_format_diameters(rack)}"
+    return f"{printer_name} ({where})"
+
+
 def _describe_filament(entry: dict, nozzle_key: str) -> str:
     """One-line "PETG #000000 (left nozzle)" for an error message (#2771).
 
@@ -1228,6 +1300,55 @@ def _effective_plate_id(explicit_plate_id: int | None, file_path: Path) -> int:
 
     resolved = default_plate_number(names) if names is not None else None
     return resolved if resolved is not None else 1
+
+
+def _wear_order(printer: Printer) -> tuple[float, int]:
+    """Sort key for printers a model job could run on: fewest print hours, then id (#3480).
+
+    The same hours as maintenance's ``get_printer_total_hours``: the runtime
+    counter plus the baseline offset a user set for a second-hand or reset
+    machine.
+    """
+    hours = (printer.runtime_seconds or 0) / 3600.0 + (printer.print_hours_offset or 0.0)
+    return hours, printer.id
+
+
+def _hours_of(printer: Printer) -> float:
+    return (printer.runtime_seconds or 0) / 3600.0 + (printer.print_hours_offset or 0.0)
+
+
+def _order_printers(
+    printers: list[Printer], order: str, last_finished: dict[int, datetime] | None = None
+) -> list[Printer]:
+    """Sort the printers an "Any model" job could take into the order they are picked (#2915).
+
+    Whatever the strategy, ties fall back to the printer id, so the outcome is
+    reproducible.
+
+    * ``fewest_hours`` (the default, #3480): the least worn machine first.
+    * ``most_hours``: the most worn first, to use up the machines already near
+      replacement.
+    * ``least_recently_used``: the printer that finished a print longest ago;
+      one that never has goes first.
+    * ``priority``: the printers' own ``dispatch_priority``, lowest first; one
+      without goes last.
+    """
+    if order == "most_hours":
+        return sorted(printers, key=lambda p: (-_hours_of(p), p.id))
+    if order == "least_recently_used":
+        finished = last_finished or {}
+        never = datetime.min
+        return sorted(printers, key=lambda p: (finished.get(p.id, never), p.id))
+    if order == "priority":
+        return sorted(
+            printers,
+            key=lambda p: (
+                p.dispatch_priority is None,
+                p.dispatch_priority if p.dispatch_priority is not None else 0,
+                p.id,
+            ),
+        )
+    return sorted(printers, key=_wear_order)
 
 
 class PrintScheduler:
@@ -1645,6 +1766,25 @@ class PrintScheduler:
                 del keyed[key]
         for item_id in [i for i, sent in self._sent_unstarted_print.items() if sent[0] == printer_id]:
             del self._sent_unstarted_print[item_id]
+
+    def printer_reconnected(self, printer_id: int, ip_address: str | None) -> None:
+        """Let a printer that has just reconnected take an upload on the next pass (#3563).
+
+        A printer whose file service stopped answering is often fixed by a
+        restart, but its upload backoff ran on for up to an hour, and nothing
+        but the timer ended it. A reconnect ends the window. The refusal count
+        and the notified text stay: a printer that still refuses gets the next,
+        longer window and no second "job waiting", and a successful upload
+        resets them as before.
+
+        The FTP client's handshake cool-off for the printer goes too. It dates
+        from before the reconnect, and inside it the first retry would fail
+        without reaching the printer and count as another refusal.
+        """
+        if self._upload_backoff.pop(printer_id, None) is not None:
+            logger.info("Printer %s reconnected; retrying uploads to it without waiting for the backoff", printer_id)
+        if ip_address:
+            BambuFTPClient.clear_handshake_cooloff(ip_address)
 
     async def check_queue(self) -> bool:
         """Check for prints ready to start.
@@ -2204,7 +2344,7 @@ class PrintScheduler:
                     # If printer not connected, try to power on via smart plug
                     if not printer_connected:
                         plugs = await self._get_smart_plugs(db, item.printer_id)
-                        auto_on_plugs = [p for p in plugs if p.auto_on and p.enabled]
+                        auto_on_plugs = self._auto_on_plugs(plugs)
                         if auto_on_plugs:
                             logger.info("Printer %s offline, attempting to power on via smart plug(s)", item.printer_id)
                             # Power on using the plug that actually feeds the printer, and
@@ -2490,6 +2630,7 @@ class PrintScheduler:
                                 drying_ids=drying_held,
                                 unmatched_on=unmatched_on,
                                 refused_uploads={pid: self._upload_refusal_kind.get(pid) for pid in backoff_printers},
+                                sliced_nozzle=candidate.sliced_nozzle,
                             )
                             # "Only if the previous print succeeded" is about the
                             # printer the job lands on: one whose last print failed
@@ -3305,6 +3446,14 @@ class PrintScheduler:
         answer "which printers can this job run on" from one query — a job can
         only be woken onto a printer the matcher would also have considered.
         ``printer_scope`` is the job creator's (#1727).
+
+        In the order of Settings > Queue > printer order (#2915), fewest print
+        hours first by default (#3480): both take the first printer that
+        fits, so an "Any" job goes to the least worn machine and a farm's jobs
+        spread by wear instead of all landing on the lowest id. The hours are
+        the maintenance counter's (runtime plus the baseline offset), which
+        counts every print, wherever it was started. Ties (printers still at
+        zero) go by id, so the order is stable.
         """
         normalized_model = normalize_printer_model(model) or model
         query = (
@@ -3317,7 +3466,34 @@ class PrintScheduler:
         if (clause := printer_scope.where_strict(Printer.id)) is not None:
             query = query.where(clause)
         result = await db.execute(query)
-        return list(result.scalars().all())
+        printers = list(result.scalars().all())
+        order = await self._get_model_dispatch_order(db)
+        last_finished: dict[int, datetime] | None = None
+        if order == "least_recently_used" and printers:
+            last_finished = await self._last_finished_by_printer(db, [p.id for p in printers])
+        return _order_printers(printers, order, last_finished)
+
+    async def _get_model_dispatch_order(self, db: AsyncSession) -> str:
+        """The order setting (#2915); anything unknown reads as the default."""
+        result = await db.execute(select(Settings).where(Settings.key == "model_dispatch_order"))
+        setting = result.scalar_one_or_none()
+        value = (setting.value if setting else "") or ""
+        return value if value in ("most_hours", "least_recently_used", "priority") else "fewest_hours"
+
+    async def _last_finished_by_printer(self, db: AsyncSession, printer_ids: list[int]) -> dict[int, datetime]:
+        """When each printer last finished a print, from the Print Log; none for one that never has."""
+        from backend.app.models.print_log import PrintLogEntry
+
+        result = await db.execute(
+            select(PrintLogEntry.printer_id, func.max(PrintLogEntry.completed_at))
+            .where(PrintLogEntry.printer_id.in_(printer_ids), PrintLogEntry.completed_at.is_not(None))
+            .group_by(PrintLogEntry.printer_id)
+        )
+        return {
+            printer_id: finished
+            for printer_id, finished in result.all()
+            if printer_id is not None and finished is not None
+        }
 
     async def _wakeable_printer_ids(self, db: AsyncSession) -> set[int]:
         """Printer IDs that at least one enabled ``auto_on`` plug can power on.
@@ -3333,6 +3509,8 @@ class PrintScheduler:
             .where(SmartPlug.printer_id.is_not(None))
             .where(SmartPlug.enabled == True)  # noqa: E712
             .where(SmartPlug.auto_on == True)  # noqa: E712
+            # Same rule as _auto_on_plugs: an MQTT plug cannot power a printer on (#3583).
+            .where(SmartPlug.plug_type != "mqtt")
         )
         return {pid for (pid,) in result.all() if pid is not None}
 
@@ -3376,6 +3554,8 @@ class PrintScheduler:
         rather than woken (#2876): the colours are readable while it is off, so
         switching a farm on one machine at a time to discover them wakes
         printers that could never have taken the job.
+        A printer whose last known nozzle cannot print the file is passed over
+        the same way (#3536).
 
         Deliberately does NOT go on to match the job once a printer is up: AMS
         trays arrive with the first status push after connect, so a filament
@@ -3394,7 +3574,8 @@ class PrintScheduler:
             if color_match_threshold is None and any(o.get("force_color_match") for o in filament_overrides or []):
                 color_match_threshold = await self._get_int_setting(db, "color_match_threshold", default=0)
             printers = await self._printers_for_model(db, candidate.target_model, target_location, printer_scope)
-            for printer in sorted(printers, key=lambda p: p.id):
+            # Fewest print hours first, as the matcher picks (#3480).
+            for printer in printers:
                 if printer.id in exclude_ids or printer.id not in wakeable_ids:
                     continue
                 if printer_manager.is_connected(printer.id):
@@ -3417,6 +3598,23 @@ class PrintScheduler:
                     )
                     continue
 
+                # #3536: the matcher rejects a printer whose nozzle cannot print
+                # the file, so waking one only spends this pass's single wake and
+                # the boot wait. A powered-off printer keeps its last status, so
+                # the nozzle is readable here. Fail-safe: no status or no reported
+                # nozzle means "fits" (None) and the printer is woken as before.
+                label = _wrong_nozzle_label(
+                    printer.name, printer_manager.get_status(printer.id), candidate.sliced_nozzle
+                )
+                if label:
+                    logger.info(
+                        "Not powering on printer %s for a %s job: its nozzle cannot print the file (%s)",
+                        printer.id,
+                        candidate.target_model,
+                        label,
+                    )
+                    continue
+
                 shortfall = self._cached_filament_shortfall(
                     printer.id, required_types, filament_overrides, color_match_threshold=color_match_threshold or 0
                 )
@@ -3430,7 +3628,7 @@ class PrintScheduler:
                     continue
 
                 plugs = await self._get_smart_plugs(db, printer.id)
-                auto_on_plugs = [p for p in plugs if p.auto_on and p.enabled]
+                auto_on_plugs = self._auto_on_plugs(plugs)
                 if not auto_on_plugs:
                     # wakeable_ids said otherwise — the plug changed under us
                     # mid-pass. Nothing to do but move on.
@@ -3483,6 +3681,7 @@ class PrintScheduler:
         drying_ids: set[int] | None = None,
         unmatched_on: Callable[[int], Awaitable[list[str]]] | None = None,
         refused_uploads: Mapping[int, FtpFailureKind | None] | None = None,
+        sliced_nozzle: float | None = None,
     ) -> tuple[int | None, str | None]:
         """Find an idle, connected printer matching the model with compatible filaments.
 
@@ -3515,6 +3714,9 @@ class PrintScheduler:
             refused_uploads: Excluded printers out of dispatch after a refused upload,
                              with why (#3409). Each is named with the reason its own
                              queue rows show, not as "Busy".
+            sliced_nozzle: Nozzle diameter the file was sliced for (#3536). A printer
+                           without that nozzle is passed over; None (unknown) passes
+                           every printer, as before.
 
         Returns:
             Tuple of (printer_id, waiting_reason):
@@ -3545,12 +3747,23 @@ class PrintScheduler:
         printers_offline_no_plug = []
         offline_missing_filament: list[tuple[str, list[str]]] = []
         printers_missing_filament: list[tuple[str, list[str]]] = []
+        printers_wrong_nozzle: list[str] = []
         candidates: list[tuple[int, int]] = []  # (printer_id, color_match_count)
         # The first eligible printer that is short on filament, kept in case
         # every eligible printer is (#3137).
         short_fallback: int | None = None
 
         for printer in printers:
+            # #3536: the pick ignored the nozzle, so a job sliced for 0.6 mm went to a
+            # 0.4 mm printer and the #1899 guard then failed it in _start_print instead
+            # of trying another printer. Fail-safe: no diameter or no reported nozzle
+            # fits (_wrong_nozzle_label returns None). Checked first on purpose: a
+            # wrong-nozzle printer that is busy, excluded or offline must not read as
+            # "Busy"/"Offline", which would hold the job silently forever.
+            wrong_nozzle = _wrong_nozzle_label(printer.name, printer_manager.get_status(printer.id), sliced_nozzle)
+            if wrong_nozzle:
+                printers_wrong_nozzle.append(wrong_nozzle)
+                continue
             if printer.id in exclude_ids and refused_uploads and printer.id in refused_uploads:
                 printers_refused.append(_refused_upload_hold_reason(printer.name, refused_uploads[printer.id]))
                 continue
@@ -3671,8 +3884,9 @@ class PrintScheduler:
                     logger.debug("Skipping printer %s (%s) - no matching override colors", printer.id, printer.name)
                     continue
             else:
-                # No preference ordering needed: the first eligible printer
-                # wins, unless its spools are too light for the job (#3137).
+                # The first eligible printer wins, which is the one with the
+                # fewest print hours (#3480, see _printers_for_model), unless
+                # its spools are too light for the job (#3137).
                 if is_short is not None and await is_short(printer.id):
                     if short_fallback is None:
                         short_fallback = printer.id
@@ -3684,7 +3898,8 @@ class PrintScheduler:
                     continue
                 return printer.id, None
 
-        # If we have candidates from preference override matching, pick the one with most color matches
+        # If we have candidates from preference override matching, pick the one with most color matches.
+        # The sort is stable: among equal matches the fewest print hours still go first (#3480).
         if candidates:
             candidates.sort(key=lambda c: c[1], reverse=True)
             if is_short is not None:
@@ -3704,6 +3919,20 @@ class PrintScheduler:
         # compatible printer already in the running for this job.
         if not (printers_busy or printers_refused or printers_offline or printers_offline_no_plug):
             printers_missing_filament.extend(offline_missing_filament)
+        # #3536: nothing else is in the way, so the nozzle is the whole reason. Named
+        # per printer; when something else also waits, the wrong ones stay out so
+        # that reason (e.g. "Busy") is not drowned by a printer that cannot help.
+        if printers_wrong_nozzle and not (
+            printers_busy
+            or printers_refused
+            or printers_offline
+            or printers_offline_no_plug
+            or printers_missing_filament
+        ):
+            return None, (
+                f"No {normalized_model}{location_suffix} has a {sliced_nozzle:g}mm nozzle: "
+                f"{', '.join(printers_wrong_nozzle)}"
+            )
 
         # Build waiting reason from what we found
         reasons = []
@@ -4472,6 +4701,7 @@ class PrintScheduler:
             # place.
             return None
         by_tray = {f["global_tray_id"]: f for f in loaded}
+        layout = TrayLayout.from_state(status)
 
         # Cheap pass first, on live status alone: every tray the mapping names
         # has to exist here. This catches a foreign mapping without opening the
@@ -4482,7 +4712,7 @@ class PrintScheduler:
                 continue
             if tray in by_tray:
                 continue
-            if tray >= 254:
+            if tray >= 254 or layout.is_external(tray):
                 # An external feed we have not heard about is absence of
                 # evidence about *that slot* — the rest of the mapping is still
                 # worth judging, so skip it rather than abandoning the pass.
@@ -4537,7 +4767,7 @@ class PrintScheduler:
                 # has to match too: with only another colour in the AMS, the
                 # printer asking for the spool beats printing in that colour.
                 want = canonical_filament_type(req.get("type"))
-                if tray >= 254 and tray in empty_external and want:
+                if (tray >= 254 or layout.is_external(tray)) and tray in empty_external and want:
                     ams_tray = next(
                         (
                             f
@@ -4934,10 +5164,11 @@ class PrintScheduler:
 
         # Parse AMS units from raw_data
         ams_data = status.raw_data.get("ams", [])
+        layout = TrayLayout.from_state(status)
         for ams_unit in ams_data:
             ams_id = int(ams_unit.get("id", 0))
             trays = ams_unit.get("tray", [])
-            is_ht = 128 <= ams_id <= 135  # AMS-HT unit ids; a regular AMS may list fewer trays
+            is_ht = is_ams_ht_id(ams_id)  # AMS-HT unit ids; a regular AMS may list fewer trays
 
             for tray in trays:
                 tray_type = tray.get("tray_type")
@@ -4950,7 +5181,7 @@ class PrintScheduler:
                     color = self._normalize_color(tray_color)
                     # Calculate global tray ID
                     # AMS-HT units have IDs starting at 128 with a single tray
-                    global_tray_id = ams_id if ams_id >= 128 else ams_id * 4 + tray_id
+                    global_tray_id = layout.global_tray_id(ams_id, tray_id)
 
                     filaments.append(
                         {
@@ -6053,7 +6284,7 @@ class PrintScheduler:
                     continue
                 printers[printer_id] = printer
             printer = printers[printer_id]
-            slot = _ams_slot_label(ams_id, tray_id)
+            slot = _ams_slot_label(ams_id, tray_id, printer_tray_layout(printer_id, printer_manager))
             if send_notification:
                 try:
                     await notification_service.on_filament_low(
@@ -6403,7 +6634,10 @@ class PrintScheduler:
         of each of its candidate models, in its location, that its creator may use.
 
         ``cache`` holds one lookup per model, location and creator for the pass,
-        so a long queue of model jobs does not query once per job."""
+        so a long queue of model jobs does not query once per job.
+
+        A printer whose last known nozzle cannot print the file is left out
+        (#3536): the job stays pending there, so it must not hold drying off."""
         printer_ids: set[int] = set()
         for candidate in _candidates_for(item):
             if not candidate.target_model:
@@ -6412,7 +6646,16 @@ class PrintScheduler:
             if key not in cache:
                 printers = await self._printers_for_model(db, candidate.target_model, item.target_location, scope)
                 cache[key] = {printer.id for printer in printers}
-            printer_ids |= cache[key]
+            # #3536: a job with no fitting nozzle now stays pending instead of
+            # failing at once, so it must not count for a printer whose last
+            # known nozzle cannot print it (it would block or trigger drying
+            # there for good). Unknown nozzle fits (fail-safe). The cache stays
+            # per model; the filter runs per candidate, not per cache entry.
+            printer_ids |= {
+                pid
+                for pid in cache[key]
+                if _wrong_nozzle_label("", printer_manager.get_status(pid), candidate.sliced_nozzle) is None
+            }
         return printer_ids
 
     async def _check_auto_drying(
@@ -6620,7 +6863,15 @@ class PrintScheduler:
                 # The firmware stops when the configured duration elapses; scheduling
                 # stops (print takes priority, queue no longer needs drying) are
                 # handled separately via _stop_drying().
-                if dry_time > 0:
+                #
+                # A parked countdown is not a running cycle (#3478): the firmware
+                # took the command and left the heater off, so dry_time sits at
+                # its full duration and never reaches 0 on its own. Treating it
+                # as running blocked auto-drying on that unit for days. A sample
+                # the stall detector has not classified yet (its first 150 s)
+                # still counts as running.
+                parked = is_countdown_parked(ams_data)
+                if dry_time > 0 and not parked:
                     if pid not in self._drying_in_progress:
                         # Drying we didn't start (manual or from before restart) —
                         # track it so scheduling stops still apply; never auto-stop it.
@@ -6657,7 +6908,25 @@ class PrintScheduler:
                     # below, so the wait overlaps the cooldown, never stacks on
                     # top of it).
                     self._auto_dry_above.pop(unit_key, None)
-                    if humidity is not None and humidity > humidity_threshold:
+                    if parked:
+                        # The timer stood still (never started, or paused by the
+                        # power limit or the print), so the cycle says nothing
+                        # about humidity: count it apart from the unproductive
+                        # cycles below (#3478).
+                        never_heated = _never_heated(unit_state) + 1
+                        unit_state["never_heated"] = never_heated
+                        logger.warning(
+                            "Auto-drying: printer %d AMS %d — drying cycle not running: the timer stands "
+                            "still at %dm with the status Off, %d in a row",
+                            pid,
+                            ams_id,
+                            dry_time,
+                            never_heated,
+                        )
+                    else:
+                        # A cycle that counted down ran; the parked streak is over.
+                        unit_state.pop("never_heated", None)
+                    if not parked and humidity is not None and humidity > humidity_threshold:
                         best = unit_state.get("best_end_humidity")
                         if isinstance(best, int) and humidity < best:
                             # Still coming down. Keep going, however far the
@@ -6707,6 +6976,7 @@ class PrintScheduler:
                         unit_state.pop("suspended", None)
                         unit_state.pop("unproductive", None)
                         unit_state.pop("best_end_humidity", None)
+                        unit_state.pop("never_heated", None)
                     # A real below-threshold reading ends any sustained-wait
                     # streak (#2518) -- "continuously above" means exactly that.
                     # An absent reading (humidity is None) is no-information and
@@ -6773,12 +7043,30 @@ class PrintScheduler:
                 if unit_state is not None:
                     if unit_state.get("suspended"):
                         logger.debug(
-                            "Auto-drying: printer %d AMS %d skipped — suspended, %d cycles left humidity "
-                            "above the %d%% threshold",
+                            "Auto-drying: printer %d AMS %d skipped — suspended until humidity is back at "
+                            "or below the %d%% threshold",
                             pid,
                             ams_id,
-                            int(unit_state.get("unproductive", 0)),
                             humidity_threshold,
+                        )
+                        continue
+
+                    never_heated = _never_heated(unit_state)
+                    if never_heated >= AUTO_DRY_MAX_NEVER_HEATED_CYCLES:
+                        unit_state["suspended"] = True
+                        logger.warning(
+                            "Auto-drying: printer %d AMS %d — suspending automatic drying. The printer "
+                            "accepted %d drying commands in a row, but each time the timer stood still and "
+                            "the unit did not heat. Clear the timer with Stop on the printer card and check "
+                            "the AMS power; automatic drying resumes once humidity is back at or below the "
+                            "%d%% threshold.",
+                            pid,
+                            ams_id,
+                            never_heated,
+                            humidity_threshold,
+                        )
+                        await self._notify_auto_drying_suspended(
+                            db, printer, ams_id, humidity, humidity_threshold, never_heated, never_heated=True
                         )
                         continue
 
@@ -6898,8 +7186,13 @@ class PrintScheduler:
         humidity: int,
         threshold: int,
         cycles: int,
+        *,
+        never_heated: bool = False,
     ) -> None:
         """Tell the user auto-drying has given up on one AMS unit (#2770).
+
+        ``never_heated`` picks the message for cycles the printer accepted but
+        never ran (#3478) instead of cycles that left humidity high.
 
         Fires once per suspension — the caller sets ``suspended`` before calling
         and every later pass short-circuits on it — because the whole point is
@@ -6910,7 +7203,7 @@ class PrintScheduler:
         Never raises: a notification provider being down must not stop the
         suspension itself from taking effect.
         """
-        ams_label = f"HT-{chr(65 + (ams_id - 128))}" if ams_id >= 128 else f"AMS-{chr(65 + ams_id)}"
+        ams_label = unit_label(ams_id, printer_tray_layout(printer.id, printer_manager).ams_type(ams_id))
         try:
             await notification_service.on_ams_drying_suspended(
                 printer.id,
@@ -6920,6 +7213,7 @@ class PrintScheduler:
                 float(threshold),
                 cycles,
                 db,
+                never_heated=never_heated,
             )
         except Exception as e:
             logger.warning("Failed to send auto-drying suspended notification: %s", e)
@@ -6972,7 +7266,9 @@ class PrintScheduler:
                 continue
             # Check if any AMS unit is still drying
             ams_list = state.raw_data.get("ams", [])
-            any_drying = any(int(a.get("dry_time") or 0) > 0 for a in ams_list)
+            # A parked timer is not drying (#3478): it never ends on its own,
+            # so it would keep the printer in here for good.
+            any_drying = any(int(a.get("dry_time") or 0) > 0 and not is_countdown_parked(a) for a in ams_list)
             if not any_drying:
                 to_remove.append(pid)
         for pid in to_remove:
@@ -7285,6 +7581,13 @@ class PrintScheduler:
         return list(result.scalars().all())
 
     @staticmethod
+    def _auto_on_plugs(plugs: list[SmartPlug]) -> list[SmartPlug]:
+        """The plugs that may power a printer on: enabled, auto on, and not a
+        monitor-only MQTT plug, which Bambuddy cannot switch (#3583). Must
+        match the query in :meth:`_wakeable_printer_ids`."""
+        return [p for p in plugs if p.auto_on and p.enabled and not is_monitor_only(p)]
+
+    @staticmethod
     def _pick_power_plug(auto_on_plugs: list[SmartPlug]) -> SmartPlug:
         """Pick the plug to power-cycle a printer back online with (#2629).
 
@@ -7443,6 +7746,7 @@ class PrintScheduler:
         if not isinstance(ams_list, list):
             ams_list = []
         best = 0
+        layout = TrayLayout.from_state(state)
         for ams in ams_list:
             if not isinstance(ams, dict):
                 continue
@@ -7455,10 +7759,10 @@ class PrintScheduler:
                 # contract, so step over it instead.
                 if not isinstance(tray, dict):
                     continue
-                if used is not None and _global_tray_id(ams_id, _int_or(tray.get("id"), 0)) not in used:
+                if used is not None and _global_tray_id(ams_id, _int_or(tray.get("id"), 0), layout) not in used:
                     continue
                 best = max(best, self._target_for_tray_type(tray.get("tray_type"), targets))
-        if used is not None and any(t >= _EXTERNAL_TRAY_ID_MIN for t in used):
+        if used is not None and any(t >= _EXTERNAL_TRAY_ID_MIN or layout.is_external(t) for t in used):
             for vt in raw_data.get("vt_tray") or []:
                 if not isinstance(vt, dict):
                     continue
@@ -8795,6 +9099,7 @@ class PrintScheduler:
                 printer_scope=printer_scope,
                 is_short=is_short,
                 unmatched_on=unmatched_on,
+                sliced_nozzle=candidates[0].sliced_nozzle,
             )
             # Every idle printer short comes back as the first of them.
             if match_id is None or await is_short(match_id):
@@ -9779,34 +10084,37 @@ class PrintScheduler:
         upload_failure = FtpFailureReport()
 
         try:
-            if ftp_retry_enabled:
-                uploaded = await with_ftp_retry(
-                    upload_file_async,
-                    printer.ip_address,
-                    printer.access_code,
-                    file_path,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer.model,
-                    progress_callback=progress_bridge,
-                    respect_handshake_cooloff=False,
-                    failure=upload_failure,
-                    max_retries=ftp_retry_count,
-                    retry_delay=ftp_retry_delay,
-                    operation_name=f"Upload print to {printer.name}",
-                )
-            else:
-                uploaded = await upload_file_async(
-                    printer.ip_address,
-                    printer.access_code,
-                    file_path,
-                    remote_path,
-                    socket_timeout=ftp_timeout,
-                    printer_model=printer.model,
-                    progress_callback=progress_bridge,
-                    respect_handshake_cooloff=False,
-                    failure=upload_failure,
-                )
+            # The printer's MQTT goes quiet while it receives the file; the
+            # stale check must not reconnect it under the print command (#3538).
+            with printer_manager.uploading(item.printer_id):
+                if ftp_retry_enabled:
+                    uploaded = await with_ftp_retry(
+                        upload_file_async,
+                        printer.ip_address,
+                        printer.access_code,
+                        file_path,
+                        remote_path,
+                        socket_timeout=ftp_timeout,
+                        printer_model=printer.model,
+                        progress_callback=progress_bridge,
+                        respect_handshake_cooloff=False,
+                        failure=upload_failure,
+                        max_retries=ftp_retry_count,
+                        retry_delay=ftp_retry_delay,
+                        operation_name=f"Upload print to {printer.name}",
+                    )
+                else:
+                    uploaded = await upload_file_async(
+                        printer.ip_address,
+                        printer.access_code,
+                        file_path,
+                        remote_path,
+                        socket_timeout=ftp_timeout,
+                        printer_model=printer.model,
+                        progress_callback=progress_bridge,
+                        respect_handshake_cooloff=False,
+                        failure=upload_failure,
+                    )
         except UploadCancelled as e:
             uploaded = False
             upload_error = (
@@ -10215,7 +10523,7 @@ class PrintScheduler:
             # from a hand-edited row) failing where it always failed, in the
             # command builder, rather than here.
             and isinstance(ams_mapping, list)
-            and any(_is_external_tray(t) for t in ams_mapping)
+            and any(_is_external_tray(t, TrayLayout.from_state(pre_status).rack) for t in ams_mapping)
             and not _might_be_dual_nozzle(printer.model, pre_status)
         ):
             from backend.app.services.filament_requirements import extract_filament_requirements
@@ -10223,7 +10531,7 @@ class PrintScheduler:
             consumed = _consumed_mapping_entries(
                 ams_mapping, extract_filament_requirements(file_path, plate_id=effective_plate_id)
             )
-            if consumed and all(_is_external_tray(t) for t in consumed):
+            if consumed and all(_is_external_tray(t, TrayLayout.from_state(pre_status).rack) for t in consumed):
                 # Exact for this plate: the command builder must not turn the
                 # AMS back on for a real tray another plate of the file uses,
                 # whether the job asked for the AMS or already had it off.

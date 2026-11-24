@@ -5,7 +5,7 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,7 +27,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
-from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
+from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId, check_slot_tray_id
 from backend.app.services import slot_unlink_grace, spool_swaps
 from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.inventory_mode import spoolman_owns_assignments
@@ -49,7 +49,7 @@ from backend.app.utils.filament_ids import (
     filament_id_to_setting_id,
     normalize_slicer_filament,
 )
-from backend.app.utils.filament_types import nozzle_temp_range, printer_filament_type
+from backend.app.utils.filament_types import nozzle_temp_range, printer_filament_type, support_filament_type
 
 logger = logging.getLogger(__name__)
 
@@ -858,6 +858,11 @@ class LinkSpoolRequest(BaseModel):
     ams_id: SlotAmsId | None = None
     tray_id: SlotTrayId | None = None
 
+    @model_validator(mode="after")
+    def a_real_slot(self) -> "LinkSpoolRequest":
+        check_slot_tray_id(self.ams_id, self.tray_id)
+        return self
+
 
 @router.post("/spools/{spool_id}/link")
 async def link_spool(
@@ -1072,6 +1077,10 @@ async def link_spool(
                     tray_sub_brands = sub_brand_override
                 if type_override:
                     tray_type = printer_filament_type(type_override)
+                # A support material keeps the slicer's suffix ("PLA-S") (#3559).
+                tray_type = support_filament_type(
+                    tray_type, tray_info_idx, f"{slot_slicer_filament_name or ''} {tray_sub_brands}"
+                )
 
                 # The spool's own wording is tried first and the reduced type
                 # only as a further fallback, so a material that already

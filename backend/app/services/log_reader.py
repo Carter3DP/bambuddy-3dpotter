@@ -25,6 +25,8 @@ from backend.app.core.logging_filters import (
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.app.models.virtual_printer import VirtualPrinter
+from backend.app.utils.printer_models import PRINTER_MODEL_ID_MAP, PRINTER_MODEL_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -239,19 +241,44 @@ def sanitize_log_content(content: str, sensitive_strings: dict[str, str] | None 
     return content
 
 
+def _model_key(value: str) -> str:
+    return value.upper().replace(" ", "").replace("-", "")
+
+
+# Every model name and code Bambuddy knows. A printer named after its model
+# keeps nothing private in that name, and redacting it would wipe the model
+# from the whole support package (#3442).
+_MODEL_NAME_KEYS = frozenset(
+    _model_key(v)
+    for v in (*PRINTER_MODEL_MAP, *PRINTER_MODEL_MAP.values(), *PRINTER_MODEL_ID_MAP, *PRINTER_MODEL_ID_MAP.values())
+)
+
+
+def _is_model_name(name: str, model: str | None) -> bool:
+    """True when the printer name is just a model name, so not worth redacting.
+
+    The printer's own model counts too, which covers a model Bambuddy does not
+    list yet.
+    """
+    key = _model_key(name.strip())
+    return key in _MODEL_NAME_KEYS or (bool(model) and key == _model_key(model.strip()))
+
+
 async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
     """Collect known sensitive values from the database for log redaction.
 
-    Covers printer names, serial numbers, IP addresses, access codes, auth
-    usernames, and the Bambu Cloud email. Pass the result to
+    Covers printer names, serial numbers (virtual printers' too), IP
+    addresses, access codes, auth usernames, and the Bambu Cloud email. Pass the result to
     :func:`sanitize_log_content`.
     """
     sensitive_strings: dict[str, str] = {}
 
     # Printer names, serial numbers, IP addresses, and access codes
-    result = await db.execute(select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code))
-    for name, serial, ip_address, access_code in result.all():
-        if name:
+    result = await db.execute(
+        select(Printer.name, Printer.serial_number, Printer.ip_address, Printer.access_code, Printer.model)
+    )
+    for name, serial, ip_address, access_code, model in result.all():
+        if name and not _is_model_name(name, model):
             sensitive_strings[name] = "[PRINTER]"
         if serial:
             sensitive_strings[serial] = "[SERIAL]"
@@ -259,6 +286,19 @@ async def collect_sensitive_strings(db: AsyncSession) -> dict[str, str]:
             sensitive_strings[ip_address] = "[IP]"
         if access_code:
             sensitive_strings[access_code] = "[ACCESS_CODE]"
+
+    # Virtual printer serials. Stored only as a suffix: the serial is the
+    # model's prefix plus it, and many prefixes (A2L, P2S, H2D, X2D) are past
+    # what the serial pattern below matches, so the certificate log lines
+    # carried them whole (#3526). Every prefix, so a log written before the
+    # VP's model was changed is covered as well.
+    from backend.app.services.virtual_printer.manager import MODEL_SERIAL_PREFIXES, _get_serial_for_model
+
+    result = await db.execute(select(VirtualPrinter.serial_suffix))
+    for (suffix,) in result.all():
+        if suffix:
+            for model in (*MODEL_SERIAL_PREFIXES, ""):
+                sensitive_strings[_get_serial_for_model(model, suffix)] = "[SERIAL]"
 
     # Auth usernames
     result = await db.execute(select(User.username))
