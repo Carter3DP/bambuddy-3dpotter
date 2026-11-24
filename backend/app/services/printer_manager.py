@@ -3,7 +3,8 @@ import logging
 import math
 import re
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import cast
 
 from sqlalchemy import select, update
@@ -22,6 +23,16 @@ from backend.app.services.bambu_mqtt import (
 from backend.app.services.pause_eta import next_pause
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
+from backend.app.utils.printer_models import has_ams3h
+from backend.app.utils.tray_ids import (
+    RACK_SLOT_COUNT,
+    TrayLayout,
+    external_slot_index,
+    is_ams_ht_id,
+    is_external_tray,
+    mapped_trays_with_slot,
+    unit_ams_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +52,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",  # H2 series
+        "H3C",  # H3 series
         # Internal codes (from MQTT/SSDP)
         "BL-P001",  # X1/X1C
         "C13",  # X1E
@@ -52,6 +64,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro (alternate code)
         "N7",  # P2S
+        "N10",  # H3C
     ]
 )
 
@@ -116,6 +129,7 @@ CHAMBER_HEATER_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",
+        "H3C",
         "X1E",
         "X2D",
         # Internal codes (from MQTT/SSDP)
@@ -127,6 +141,7 @@ CHAMBER_HEATER_MODELS = frozenset(
         "O2D",  # H2D Pro alternate code
         "O1S",  # H2S
         "N6",  # X2D
+        "N10",  # H3C (65 °C active heater; BambuStudio support_chamber_temp_control "1")
     ]
 )
 
@@ -136,7 +151,7 @@ def supports_chamber_heater(model: str | None) -> bool:
 
     The chamber temperature SENSOR is more widely deployed than the chamber
     HEATER — X1C/P2S report chamber temp but ignore M141. Only H2C, H2D,
-    H2D Pro, H2S, X1E, X2D actually heat. Sensor-only models silently swallow the
+    H2D Pro, H2S, H3C, X1E, X2D actually heat. Sensor-only models silently swallow the
     command at the firmware level, so we 400 at the route to surface that.
     """
     if not model:
@@ -145,7 +160,7 @@ def supports_chamber_heater(model: str | None) -> bool:
 
 
 # Models with a cooling / heating airduct flap. Same set as the frontend
-# PrintersPage airduct-toggle whitelist (P2S, X2D, H2D, H2D Pro, H2C, H2S).
+# PrintersPage airduct-toggle whitelist (P2S, X2D, H2D, H2D Pro, H2C, H2S, H3C).
 # X1E has a chamber heater but NO airduct flap — the warm-air recirculation
 # happens via the fixed front-door inlet, so no `set_airduct` command is
 # needed (and the firmware ignores it). P2S has an airduct but no heater —
@@ -162,6 +177,7 @@ CHAMBER_AIRDUCT_MODELS = frozenset(
         "H2D",
         "H2DPRO",
         "H2S",
+        "H3C",
         # Internal codes (from MQTT/SSDP)
         "N7",  # P2S
         "N6",  # X2D
@@ -171,6 +187,7 @@ CHAMBER_AIRDUCT_MODELS = frozenset(
         "O1E",  # H2D Pro
         "O2D",  # H2D Pro alternate code
         "O1S",  # H2S
+        "N10",  # H3C
     ]
 )
 
@@ -178,7 +195,7 @@ CHAMBER_AIRDUCT_MODELS = frozenset(
 def supports_airduct(model: str | None) -> bool:
     """Check if a printer model has a cooling / heating airduct mode toggle.
 
-    Mirrors the frontend PrintersPage `['P2S', 'X2D', 'H2D', 'H2C', 'H2S']`
+    Mirrors the frontend PrintersPage `['P2S', 'X2D', 'H2D', 'H2C', 'H2S', 'H3C']`
     + H2D Pro whitelist. Distinct from `supports_chamber_heater` — P2S has
     the airduct toggle but no active heater, and X1E has the heater but no
     airduct. The preheat stage cares about the intersection (heater AND
@@ -545,6 +562,12 @@ class PrinterManager:
             await mqtt_relay.on_plate_clear_state(printer_id, printer.name, printer.serial_number, awaiting)
         except Exception as e:
             logger.warning("Failed to publish plate-clear state for printer %d: %s", printer_id, e)
+
+        state = self.get_status(printer_id)
+        if state:
+            from backend.app.services.wled import wled_manager
+
+            wled_manager.handle_status(printer_id, state, awaiting_plate_clear=awaiting)
 
         # Only the rising edge is worth a notification — "the bed is now free"
         # is not an action item, and the queue clears the gate by itself.
@@ -1031,6 +1054,22 @@ class PrinterManager:
         """Get the MQTT client for a printer."""
         return self._clients.get(printer_id)
 
+    @contextmanager
+    def uploading(self, printer_id: int | None) -> Iterator[None]:
+        """Bambuddy is uploading to this printer: its MQTT silence is expected (#3538).
+
+        Ends on the client it began on, so a client replaced meanwhile is
+        neither left counting nor decremented.
+        """
+        client = self._clients.get(printer_id) if printer_id is not None else None
+        if client is not None:
+            client.begin_upload()
+        try:
+            yield
+        finally:
+            if client is not None:
+                client.end_upload()
+
     def mark_printer_offline(self, printer_id: int):
         """Mark a printer as offline and trigger status callback.
 
@@ -1361,6 +1400,7 @@ def _trays_on_extruder(
     ams_layout: list[tuple[int, bool]],
     active_extruder: int | None,
     ams_extruder_map: dict | None,
+    tray_layout: TrayLayout,
 ) -> set[int] | None:
     """The global trays a local ``raw_slot`` can be on the AMS units wired to
     ``active_extruder`` (an AMS-HT's one tray for slot 0), or None when the
@@ -1378,10 +1418,8 @@ def _trays_on_extruder(
             return None
         if nozzle != active_extruder:
             continue
-        if not is_ht:
-            trays.add(ams_id * 4 + raw_slot)
-        elif raw_slot == 0:
-            trays.add(ams_id)
+        if not is_ht or raw_slot == 0:
+            trays.add(tray_layout.global_tray_id(ams_id, raw_slot))
     return trays
 
 
@@ -1391,6 +1429,7 @@ def resolve_expected_tray(
     mapping_raw: object,
     active_extruder: int | None = None,
     ams_extruder_map: dict | None = None,
+    tray_layout: TrayLayout | None = None,
 ) -> int | None:
     """Globalise a raw firmware ``tray_tar``/``tray_pre`` value for the runout UI (#2587).
 
@@ -1414,35 +1453,34 @@ def resolve_expected_tray(
         * no regular AMS -> ``None``
     - ``4``-``15`` -> already a global regular-AMS ID, returned as-is
 
+    A printer with a rack AMS (``tray_layout``) reports the rack's raw slot 0-8.
+
     Returns ``None`` for anything it can't place, so the caller surfaces a
     "check the printer" message instead of pointing at the wrong slot.
     """
     if raw_slot is None or raw_slot in (255, -1):
         return None
+    layout = tray_layout or TrayLayout()
+    if layout.rack_units:
+        rack_tray = layout.raw_slot_to_global(raw_slot)
+        if rack_tray is not None:
+            return rack_tray
+        return raw_slot if is_ams_ht_id(raw_slot) or layout.is_external(raw_slot) else None
     if raw_slot == 254:
         return 254
-    if 128 <= raw_slot <= 135:
+    if is_ams_ht_id(raw_slot):
         return raw_slot
     if 0 <= raw_slot <= 3:
         regular = [ams_id for ams_id, is_ht in ams_layout if not is_ht]
         if len(regular) == 1:
-            return regular[0] * 4 + raw_slot
+            return layout.global_tray_id(regular[0], raw_slot)
         if len(regular) > 1:
-            candidates: set[int] = set()
-            for value in mapping_raw if isinstance(mapping_raw, list) else []:
-                if not isinstance(value, int) or value >= 65535:
-                    continue
-                ams_hw_id = value >> 8
-                slot = value & 0xFF
-                if 0 <= ams_hw_id <= 3 and (slot & 0x03) == raw_slot:
-                    candidates.add(ams_hw_id * 4 + raw_slot)
-                elif 128 <= ams_hw_id <= 135 and raw_slot == 0:
-                    candidates.add(ams_hw_id)
+            candidates = set(mapped_trays_with_slot(mapping_raw, raw_slot))
             if len(candidates) == 1:
                 return candidates.pop()
             # The print paused on the active nozzle, so the slot is on an AMS
             # that feeds it.
-            narrowed = _trays_on_extruder(raw_slot, ams_layout, active_extruder, ams_extruder_map)
+            narrowed = _trays_on_extruder(raw_slot, ams_layout, active_extruder, ams_extruder_map, layout)
             if narrowed is None:
                 return None
             if candidates:
@@ -1468,6 +1506,27 @@ def _ams_temp(raw: object) -> float | None:
     # NaN or infinity would put a token in the WebSocket frame that the
     # browser's JSON.parse rejects, dropping the whole status push.
     return value if math.isfinite(value) else None
+
+
+def _dryer_fields(ams_data: dict) -> dict:
+    """An AMS 3H's dryer (its drying zone's slots and readings, lifted onto the unit by the MQTT layer)."""
+    raw_slots = ams_data.get("dry_zone_slots")
+    dry_slots: list[int] = []
+    for raw in raw_slots if isinstance(raw_slots, list) else []:
+        try:
+            slot = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= slot < RACK_SLOT_COUNT and slot not in dry_slots:
+            dry_slots.append(slot)
+    if not dry_slots:
+        return {"dryer_slots": [], "dryer_humidity": None, "dryer_temp": None}
+    humidity = ams_humidity_percent({"humidity_raw": ams_data.get("dry_zone_humidity_raw")})
+    return {
+        "dryer_slots": dry_slots,
+        "dryer_humidity": int(round(humidity)) if humidity is not None and math.isfinite(humidity) else None,
+        "dryer_temp": _ams_temp(ams_data.get("dry_zone_temp")),
+    }
 
 
 def ams_units_to_dicts(
@@ -1548,7 +1607,7 @@ def ams_units_to_dicts(
         humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
 
         # AMS-HT by its unit id: a regular AMS can report fewer than 4 trays.
-        is_ams_ht = 128 <= ams_id <= 135
+        is_ams_ht = is_ams_ht_id(ams_id)
 
         # Active-cycle filament + target temperature for the badge.
         # Bambu does not echo the cycle's chosen filament/temp on the
@@ -1604,8 +1663,10 @@ def ams_units_to_dicts(
                 # Active-cycle filament name + target temperature
                 "dry_target_temp": dry_target_temp,
                 "dry_filament": dry_filament,
-                # Module type: "ams", "n3f", "n3s" (from get_version)
+                # Module type: "ams", "n3f", "n3s", "n10a" (from get_version)
                 "module_type": str(ams_data.get("module_type") or ""),
+                "ams_type": int(unit_ams_type(ams_id, ams_data.get("info"))),
+                **_dryer_fields(ams_data),
             }
         )
     return ams_units
@@ -1635,10 +1696,12 @@ def vt_trays_to_dicts(raw: object, resolve_slot_k: Callable) -> list[dict]:
         vt_k_value = vt_data.get("k")
         vt_cali_idx = vt_data.get("cali_idx")
         if vt_k_value is None:
-            # External holder: id 254 is Ext-L, 255 is Ext-R. The resolver
-            # takes the 0/1 tray index, so normalise before asking.
+            # External holder: id 254 is Ext-L, 255 is Ext-R (an H3C's 247-253
+            # its other hotends). The resolver takes the stored tray index.
             vt_id = int(vt_data.get("id", 254))
-            vt_k_value = resolve_slot_k(vt_cali_idx, 255, vt_id - 254 if vt_id >= 254 else vt_id)
+            vt_k_value = resolve_slot_k(
+                vt_cali_idx, 255, external_slot_index(vt_id) if is_external_tray(vt_id, rack=True) else vt_id
+            )
 
         tray_id = int(vt_data.get("id", 254))
         vt_tray.append(
@@ -1694,6 +1757,7 @@ def printer_state_to_dict(
     # Parse virtual tray (external spool) — now a list
     if "vt_tray" in raw_data:
         vt_tray = vt_trays_to_dicts(raw_data["vt_tray"], resolve_slot_k)
+    tray_layout = TrayLayout.from_units(ams_units, vt_tray)
 
     # Get ams_extruder_map from raw_data (populated by MQTT handler from AMS info field)
     ams_extruder_map = raw_data.get("ams_extruder_map", {})
@@ -1753,6 +1817,7 @@ def printer_state_to_dict(
                 raw_data.get("mapping"),
                 active_extruder=state.active_extruder,
                 ams_extruder_map=nozzle_wiring(state),
+                tray_layout=tray_layout,
             )
             if state.state == "PAUSE"
             else None
@@ -1764,6 +1829,7 @@ def printer_state_to_dict(
                 raw_data.get("mapping"),
                 active_extruder=state.active_extruder,
                 ams_extruder_map=nozzle_wiring(state),
+                tray_layout=tray_layout,
             )
             if state.state == "PAUSE"
             else None
@@ -1865,6 +1931,7 @@ def printer_state_to_dict(
                 "nozzle_type": n.get("type", ""),
                 "nozzle_diameter": n.get("diameter", ""),
                 "wear": n.get("wear"),
+                "print_time_s": n.get("print_time_s"),
                 "stat": n.get("stat"),
                 "max_temp": n.get("max_temp", 0),
                 "serial_number": n.get("serial_number", ""),
@@ -1873,6 +1940,7 @@ def printer_state_to_dict(
                 # The push replaces the whole rack: without it a slot lost its
                 # material label on every push (PSF-3).
                 "filament_type": n.get("filament_type", ""),
+                "addr_id": n.get("addr_id"),
             }
             for n in (state.nozzle_rack or [])
         ],
@@ -1948,3 +2016,11 @@ async def init_printer_connections(db: AsyncSession):
                 printer.name,
                 outcome,
             )
+
+
+def printer_tray_layout(printer_id: int | None, manager: PrinterManager | None = None) -> TrayLayout:
+    """How printer ``printer_id`` numbers its trays: from its live AMS data, else its model."""
+    if printer_id is None:
+        return TrayLayout()
+    manager = manager or printer_manager
+    return TrayLayout.from_state(manager.get_status(printer_id), has_ams3h(manager.get_model(printer_id)))

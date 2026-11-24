@@ -2,6 +2,10 @@
 
 This file tracks features added or changed in the 3DPotter fork of Bambuddy. The upstream release history is in [CHANGELOG.md](CHANGELOG.md).
 
+## Bambuddy 1.3.2
+
+This fork includes upstream Bambuddy 1.3.2. Working Hours and Queue Forecast remain in Workflow settings alongside the new printer order for any-model jobs.
+
 ## Working Hours
 
 Configure a daily schedule in **Settings → Workflow → Queue & Dispatch → Working Hours**. Times use the Bambuddy server's `TZ` setting. If the end time is earlier than the start time, the window closes the following day.
@@ -59,3 +63,5 @@ Update this file in the same pull request whenever a fork feature is added or it
 In **Settings → General → File Manager**, set the trash folder name (default `.bambuddy-trash`) and how many days deleted files should stay in trash (default 30). Bambuddy creates the folder on each writable linked drive when first needed. Single-file deletes, bulk deletes, and File Manager auto-purge move eligible linked files there. Restore returns a file to its original location, and the trash sweeper removes expired files. Read-only shares cannot be modified. Removing a linked folder disconnects it without deleting its contents. Restore or empty that folder’s trash before disconnecting it.
 
 The trash retention field uses the shared number input and saves valid changes immediately, including changes made with its increment and decrement arrows.
+
+The configured trash folder may already contain files. Bambuddy stores each deleted file in a unique subfolder and expires only its tracked trash entries.

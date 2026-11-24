@@ -1,5 +1,5 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, Clock, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Pencil, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud, MonitorPlay, Info, Timer } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, Clock, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Pencil, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye, Cog, QrCode, Heart, Briefcase, Workflow, UploadCloud, MonitorPlay, Info, Timer, Lightbulb } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -19,7 +19,7 @@ import {
 import { describeHASensorReading, iconForHASensor } from '../utils/haSensorDisplay';
 import { SECRET_PLACEHOLDER, secretsToReenter, selectPlaceholderOnFocus } from '../utils/secrets';
 import { PreheatFilamentTargetsEditor } from '../components/PreheatFilamentTargetsEditor';
-import type { Printer as PrinterInfo, APIKey, AppSettings, AppSettingsUpdate, PrinterHASensor, LocationHASensor, LocationHASensorReading, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode } from '../api/client';
+import type { Printer as PrinterInfo, APIKey, AppSettings, AppSettingsUpdate, PrinterHASensor, LocationHASensor, LocationHASensorReading, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse, CalibrationMode, ModelDispatchOrder } from '../api/client';
 import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
 import { CameraTokensSection } from './CameraTokensPage';
@@ -50,6 +50,7 @@ import { VirtualPrinterList } from '../components/VirtualPrinterList';
 import { SpoolBuddySettings } from '../components/SpoolBuddySettings';
 import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
+import { WLEDSettings } from '../components/WLEDSettings';
 import { EmailSettings } from '../components/EmailSettings';
 import { LDAPSettings } from '../components/LDAPSettings';
 import { PrinterAccessSettings } from '../components/PrinterAccessSettings';
@@ -73,7 +74,7 @@ import { NumberInput } from '../components/NumberInput';
 import { PrinterSearchPicker } from '../components/PrinterSearchPicker';
 import { UsbCameraDevicePicker } from '../components/UsbCameraDevicePicker';
 
-const validTabs = ['general', 'plugs', 'sensors', 'notifications', 'queue', 'filament', 'camera', 'network', 'apikeys', 'virtual-printer', 'spoolbuddy', 'failure-detection', 'users', 'backup'] as const;
+const validTabs = ['general', 'plugs', 'sensors', 'notifications', 'queue', 'filament', 'camera', 'network', 'wled', 'apikeys', 'virtual-printer', 'spoolbuddy', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
 interface SettingsTabEntry { tab: TabType; icon: LucideIcon; label: string; extra?: ReactNode }
 
@@ -99,6 +100,7 @@ registerSettingsSearch({ labelKey: 'settings.queueForecast', labelFallback: 'Que
 registerSettingsSearch({ labelKey: 'settings.staggeredStart', labelFallback: 'Staggered Start', tab: 'queue', keywords: 'staggered batch delay start queue group', anchor: 'card-staggered' });
 registerSettingsSearch({ labelKey: 'settings.plateClear', labelFallback: 'Plate-Clear Confirmation', tab: 'queue', keywords: 'plate clear confirm auto queue', anchor: 'card-plate' });
 registerSettingsSearch({ labelKey: 'settings.workingHoursTitle', labelFallback: 'Working Hours', tab: 'queue', keywords: 'working hours shift cutoff shortest print schedule dispatch queue farm', anchor: 'card-working-hours' });
+registerSettingsSearch({ labelKey: 'settings.dispatchOrderTitle', labelFallback: 'Printer Order for Any-Model Jobs', tab: 'queue', keywords: 'printer order any model dispatch pick wear hours least recently used idle priority farm balance', anchor: 'card-dispatch-order' });
 registerSettingsSearch({ labelKey: 'settings.concurrentUploadsTitle', labelFallback: 'Concurrent Uploads', tab: 'queue', keywords: 'concurrent parallel upload transfer ftp queue slow farm simultaneous', anchor: 'card-concurrent-uploads' });
 registerSettingsSearch({ labelKey: 'settings.gcodeInjection', labelFallback: 'G-code Injection', tab: 'queue', keywords: 'gcode injection start end autoprint farmloop swapmod autoclear printflow', anchor: 'card-gcode' });
 registerSettingsSearch({ labelKey: 'settings.slicerCard', labelFallback: 'Slicer', tab: 'queue', keywords: 'slicer orcaslicer bambustudio orca bambu api sidecar url docker preferred', anchor: 'card-slicer' });
@@ -323,6 +325,7 @@ export function SettingsPage() {
   // Camera tokens and the overlay builder used to live under API Keys; links
   // to them (bookmarks, the wiki, /camera-tokens) open the Camera tab instead.
   const canSeeApiKeysTab = hasPermission('api_keys:read') || hasPermission('settings:update');
+  const canManageWled = !authLoading && hasPermission('printers:update');
   const isLegacyCameraLink = tabParam === 'apikeys'
     && ['#card-camera-tokens', '#card-stream-overlay'].includes(window.location.hash);
   const activeTab: TabType = isLegacyEmailTab ? 'users'
@@ -377,8 +380,9 @@ export function SettingsPage() {
   // Waits for the session so a permission not loaded yet doesn't count as none.
   useEffect(() => {
     if (!authLoading && activeTab === 'apikeys' && !canSeeApiKeysTab) handleTabChange('camera');
+    if (!authLoading && activeTab === 'wled' && !canManageWled) handleTabChange('general');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, activeTab, canSeeApiKeysTab]);
+  }, [authLoading, activeTab, canSeeApiKeysTab, canManageWled]);
 
   // Switch the Workflow tab's sub-tab and reflect it in the URL so deep-links work.
   const handleQueueSubTabChange = (sub: 'dispatch' | 'pipelines') => {
@@ -1035,7 +1039,8 @@ export function SettingsPage() {
       password: userFormData.password || undefined,
       // Empty removes the email; the backend reads null as "unchanged".
       email: userFormData.email,
-      role: userFormData.role,
+      // No role: there is no field for it, and the backend derives it from
+      // the groups. Sending the old one back kept a demoted admin an admin (#3533).
       group_ids: userFormData.group_ids,
     };
     if (!updateData.password) {
@@ -1375,6 +1380,7 @@ export function SettingsPage() {
       (baseline.require_plate_clear ?? false) !== (localSettings.require_plate_clear ?? false) ||
       workingHoursChanged ||
       (baseline.queue_max_concurrent_uploads ?? 4) !== (localSettings.queue_max_concurrent_uploads ?? 4) ||
+      (baseline.model_dispatch_order ?? 'fewest_hours') !== (localSettings.model_dispatch_order ?? 'fewest_hours') ||
       (baseline.preheat_enabled ?? false) !== (localSettings.preheat_enabled ?? false) ||
       (baseline.preheat_filament_targets ?? '') !== (localSettings.preheat_filament_targets ?? '') ||
       (baseline.preheat_max_wait_seconds ?? 900) !== (localSettings.preheat_max_wait_seconds ?? 900) ||
@@ -1509,6 +1515,7 @@ export function SettingsPage() {
         queue_forecast_gap_minutes: localSettings.queue_forecast_gap_minutes,
         queue_working_hours: workingHoursChanged ? editedHours : undefined,
         queue_max_concurrent_uploads: localSettings.queue_max_concurrent_uploads,
+        model_dispatch_order: localSettings.model_dispatch_order,
         preheat_enabled: localSettings.preheat_enabled,
         preheat_filament_targets: localSettings.preheat_filament_targets,
         preheat_max_wait_seconds: localSettings.preheat_max_wait_seconds,
@@ -1664,7 +1671,7 @@ export function SettingsPage() {
 
   // Cross-tab search is powered by the module-level registry in lib/settingsSearch.
   // Resolve i18n labels here so language changes take effect without re-registering.
-  const searchIndex = getSettingsSearchEntries().map(e => ({
+  const searchIndex = getSettingsSearchEntries().filter(e => e.tab !== 'wled' || canManageWled).map(e => ({
     ...e,
     label: t(e.labelKey, e.labelFallback ?? e.labelKey),
   }));
@@ -1732,6 +1739,7 @@ export function SettingsPage() {
     { tab: 'filament', icon: Cylinder, label: t('settings.tabs.filament') },
     { tab: 'camera', icon: Video, label: t('settings.tabs.camera') },
     { tab: 'network', icon: Wifi, label: t('settings.tabs.network'), extra: statusDot(!!mqttStatus?.enabled) },
+    ...(canManageWled ? [{ tab: 'wled', icon: Lightbulb, label: t('settings.tabs.wled') }] : []),
     // API Keys holds API keys, webhooks, the API browser and Connected Apps;
     // a user who may see none of them would land on an empty tab.
     ...(canSeeApiKeysTab
@@ -4435,6 +4443,8 @@ export function SettingsPage() {
         </div>
       )}
 
+      {activeTab === 'wled' && canManageWled && <WLEDSettings />}
+
       {/* API Keys Tab */}
       {activeTab === 'camera' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -5688,36 +5698,6 @@ export function SettingsPage() {
           </Card>
 
           {/* Concurrent queue uploads (#2555) */}
-          <Card id="card-concurrent-uploads">
-            <CardHeader>
-              <h3 className="text-base font-semibold text-white flex items-center gap-2">
-                <UploadCloud className="w-4 h-4 text-bambu-green" />
-                {t('settings.concurrentUploadsTitle', 'Concurrent Uploads')}
-              </h3>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-xs text-bambu-gray">
-                {t('settings.concurrentUploadsDescription', 'How many printers the queue may send files to at the same time. Printers receive files slowly (a large print can take several minutes), and each one waits its turn — so on a bigger fleet, raising this is what stops the last printer in a batch from waiting out every transfer before it. Lower it if your network or Bambuddy host struggles with parallel transfers.')}
-              </p>
-              <div className="w-full sm:w-1/2">
-                <label className="block text-xs text-bambu-gray mb-1">
-                  {t('settings.concurrentUploadsLabel', 'Printers uploaded to at once')}
-                </label>
-                <NumberInput
-                  min={1}
-                  max={16}
-                  value={localSettings.queue_max_concurrent_uploads ?? 4}
-                  onChange={(v) => updateSetting('queue_max_concurrent_uploads', v)}
-                  fallback={1}
-                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
-                />
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('settings.concurrentUploadsHelp', '1 sends to one printer at a time (the old behaviour). Default is 4.')}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Preheat & Heat Soak (#1468) */}
           <Card id="card-preheat">
             <CardHeader>
@@ -6547,6 +6527,74 @@ export function SettingsPage() {
                   );
                 });
               })()}
+            </CardContent>
+          </Card>
+
+          {/* Printer order for any-model jobs (#2915) */}
+          <Card id="card-dispatch-order">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <ListOrdered className="w-4 h-4 text-bambu-green" />
+                {t('settings.dispatchOrderTitle', 'Printer Order for Any-Model Jobs')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.dispatchOrderDescription', 'When a job is queued for any printer of a model, this decides which of the printers that can take it gets it. A printer that is busy, offline or short of filament is passed over, whatever the order.')}
+              </p>
+              <div className="w-full sm:w-1/2">
+                <label htmlFor="model_dispatch_order" className="block text-xs text-bambu-gray mb-1">
+                  {t('settings.dispatchOrderLabel', 'Pick the printer')}
+                </label>
+                <div className="relative">
+                  <select
+                    id="model_dispatch_order"
+                    value={localSettings.model_dispatch_order ?? 'fewest_hours'}
+                    onChange={(e) => updateSetting('model_dispatch_order', e.target.value as ModelDispatchOrder)}
+                    className="w-full px-3 py-2 pr-10 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none appearance-none cursor-pointer"
+                  >
+                    <option value="fewest_hours">{t('settings.dispatchOrderFewestHours', 'With the fewest print hours (default)')}</option>
+                    <option value="most_hours">{t('settings.dispatchOrderMostHours', 'With the most print hours')}</option>
+                    <option value="least_recently_used">{t('settings.dispatchOrderLeastRecentlyUsed', 'Idle the longest')}</option>
+                    <option value="priority">{t('settings.dispatchOrderPriority', 'By the priority set on each printer')}</option>
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray pointer-events-none" />
+                </div>
+              </div>
+              <p className="text-xs text-bambu-gray mt-1">
+                {t('settings.dispatchOrderHelp', "Fewest hours spreads the wear over the farm. Most hours uses up the machines near replacement first. Idle the longest goes by each printer's last finished print, and one that never printed goes first. By priority follows the Priority field in each printer's settings: the lowest number first, printers without one last.")}
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Concurrent queue uploads (#2555) */}
+          <Card id="card-concurrent-uploads">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <UploadCloud className="w-4 h-4 text-bambu-green" />
+                {t('settings.concurrentUploadsTitle', 'Concurrent Uploads')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.concurrentUploadsDescription', 'How many printers the queue may send files to at the same time. Printers receive files slowly (a large print can take several minutes), and each one waits its turn — so on a bigger fleet, raising this is what stops the last printer in a batch from waiting out every transfer before it. Lower it if your network or Bambuddy host struggles with parallel transfers.')}
+              </p>
+              <div className="w-full sm:w-1/2">
+                <label className="block text-xs text-bambu-gray mb-1">
+                  {t('settings.concurrentUploadsLabel', 'Printers uploaded to at once')}
+                </label>
+                <NumberInput
+                  min={1}
+                  max={16}
+                  value={localSettings.queue_max_concurrent_uploads ?? 4}
+                  onChange={(v) => updateSetting('queue_max_concurrent_uploads', v)}
+                  fallback={1}
+                  className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                />
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('settings.concurrentUploadsHelp', '1 sends to one printer at a time (the old behaviour). Default is 4.')}
+                </p>
+              </div>
             </CardContent>
           </Card>
           </div>

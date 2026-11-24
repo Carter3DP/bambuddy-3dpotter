@@ -232,10 +232,11 @@ describe('SettingsPage', () => {
 
       // The page auto-saves on a 500ms debounce, so the default 1s waitFor
       // window is only just wide enough — give the request room to land.
+      // Wait for the value, not just any save: on a loaded runner the page can
+      // save the external_url it detected before the click lands.
       await waitFor(() => {
-        expect(saved).not.toBeNull();
+        expect(saved?.finish_photo_restore_plate).toBe(false);
       }, { timeout: 3000 });
-      expect(saved!.finish_photo_restore_plate).toBe(false);
     });
   });
 
@@ -304,8 +305,9 @@ describe('SettingsPage', () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
       await userEvent.click(within(label.closest('div')!.parentElement!).getByRole('checkbox'));
 
+      // The save the click made, not the external_url one that can come first.
       await waitFor(() => {
-        expect(saved).not.toBeNull();
+        expect(saved?.finish_photo_restore_plate).toBe(false);
       }, { timeout: 3000 });
       expect(saved!).not.toHaveProperty('energy_cost_per_kwh');
       expect(saved!.energy_price_source).toBe('homeassistant');
@@ -1163,10 +1165,11 @@ describe('SettingsPage', () => {
 
       expect(toggle).toBeChecked();
       expect(screen.getByDisplayValue('15')).toBeInTheDocument();
+      // Wait for the value, not just any save: on a loaded runner the page can
+      // save the external_url it detected before the click lands.
       await waitFor(() => {
-        expect(saved).not.toBeNull();
+        expect(saved?.ambient_drying_sustained_minutes).toBe(15);
       }, { timeout: 3000 });
-      expect(saved!.ambient_drying_sustained_minutes).toBe(15);
     });
 
     it('clearing the field does not snap it to a value mid-edit', async () => {
@@ -1724,6 +1727,79 @@ describe('SettingsPage', () => {
       render(<SettingsPage />);
       await waitFor(() => expect(screen.getByText('External Cameras')).toBeInTheDocument());
     });
+
+    describe('WLED permission', () => {
+      const serveWledPrinter = (onPresetRequest: () => void) => server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          id: 1, name: 'Printer 1', wled_config: {
+            enabled: true, base_url: 'http://wled.local', presets: { printing: 3 }, finished_timeout_seconds: 0,
+          },
+        }])),
+        http.post('/api/v1/printers/1/wled/presets', () => {
+          onPresetRequest();
+          return HttpResponse.json([{ id: 3, name: 'Printing' }]);
+        }),
+      );
+
+      it.each([true, false])('shows WLED and loads presets when auth enabled=%s with access', async (authEnabled) => {
+        if (authEnabled) signInWith(['settings:read', 'printers:update']);
+        let presetRequests = 0;
+        serveWledPrinter(() => { presetRequests += 1; });
+        render(<SettingsPage />);
+        await userEvent.click(await screen.findByRole('button', { name: 'WLED' }));
+        expect(await screen.findByText('1 presets loaded')).toBeInTheDocument();
+        expect(document.getElementById('card-wled')).not.toBeNull();
+        expect(presetRequests).toBeGreaterThan(0);
+      });
+
+      it('hides WLED from navigation and search without printers:update', async () => {
+        signInWith(['settings:read']);
+        let presetRequests = 0;
+        serveWledPrinter(() => { presetRequests += 1; });
+        render(<SettingsPage />);
+        await screen.findByRole('heading', { name: 'Settings' });
+        expect(screen.queryByRole('button', { name: 'WLED' })).toBeNull();
+        await userEvent.type(screen.getByPlaceholderText(/Search settings/), 'wled');
+        expect(screen.queryByText('WLED')).toBeNull();
+        expect(document.getElementById('card-wled')).toBeNull();
+        expect(presetRequests).toBe(0);
+      });
+
+      it('redirects an unauthorized WLED deep link without mounting or loading presets', async () => {
+        signInWith(['settings:read']);
+        window.history.replaceState({}, '', '/settings?tab=wled');
+        let presetRequests = 0;
+        serveWledPrinter(() => { presetRequests += 1; });
+        render(<SettingsPage />);
+        await waitFor(() => expect(window.location.search).toBe(''));
+        expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'WLED' })).toBeNull();
+        expect(document.getElementById('card-wled')).toBeNull();
+        expect(presetRequests).toBe(0);
+      });
+
+      it('unmounts WLED when printers:update is revoked during the session', async () => {
+        let permissions = ['settings:read', 'printers:update'];
+        signInWith(permissions);
+        server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({
+          id: 2, username: 'viewer', role: 'user', is_active: true, is_admin: false,
+          groups: [], permissions, created_at: '2026-01-01T00:00:00Z',
+        })));
+        let presetRequests = 0;
+        serveWledPrinter(() => { presetRequests += 1; });
+        render(<SettingsPage />);
+        await userEvent.click(await screen.findByRole('button', { name: 'WLED' }));
+        expect(await screen.findByText('1 presets loaded')).toBeInTheDocument();
+        const requestsBeforeRevocation = presetRequests;
+
+        permissions = ['settings:read'];
+        window.dispatchEvent(new CustomEvent('auth:recheck'));
+        await waitFor(() => expect(document.getElementById('card-wled')).toBeNull());
+        await waitFor(() => expect(window.location.search).toBe(''));
+        expect(screen.queryByRole('button', { name: 'WLED' })).toBeNull();
+        expect(presetRequests).toBe(requestsBeforeRevocation);
+      });
+    });
   });
 
   describe('external camera snapshot URL override (#1177)', () => {
@@ -2260,10 +2336,11 @@ describe('SettingsPage', () => {
       const row = label.closest('div')!.parentElement!;
       await user.click(within(row).getByRole('checkbox'));
 
+      // Wait for the value, not just any save: on a loaded runner the page can
+      // save the external_url it detected before the click lands.
       await waitFor(() => {
-        expect(saved).not.toBeNull();
+        expect(saved?.confirm_outcome_external_prints).toBe(true);
       }, { timeout: 3000 });
-      expect(saved!.confirm_outcome_external_prints).toBe(true);
     });
 
     it('reflects a value the backend already has', async () => {

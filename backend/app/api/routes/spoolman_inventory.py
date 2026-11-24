@@ -34,6 +34,7 @@ from backend.app.api.routes._spoolman_helpers import (
     _safe_optional_float,
     assert_safe_spoolman_url,
     cost_per_kg_to_spoolman_price,
+    split_spoolman_filament_name,
     spoolman_cost_per_kg,
     spoolman_net_weight,
     spoolman_price_weight,
@@ -55,7 +56,13 @@ from backend.app.models.supplier import SpoolmanSpoolSupplier, Supplier
 from backend.app.models.user import User
 from backend.app.schemas.spool import SpoolFilamentPresetBase, SpoolKProfileBase, naive_utc
 from backend.app.schemas.spool_usage import SpoolUsageHistoryResponse
-from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId, SpoolmanFilamentPatch, SpoolmanSlotAssignmentEnriched
+from backend.app.schemas.spoolman import (
+    SlotAmsId,
+    SlotTrayId,
+    SpoolmanFilamentPatch,
+    SpoolmanSlotAssignmentEnriched,
+    check_slot_tray_id,
+)
 from backend.app.schemas.supplier import SpoolSupplierLinkInput
 from backend.app.services import filament_profile_default as profile_defaults, slot_unlink_grace, spool_swaps
 from backend.app.services.ams_assignment_lock import get_spool_move_lock
@@ -85,7 +92,8 @@ from backend.app.utils.filament_ids import (
     filament_id_to_setting_id,
     normalize_slicer_filament,
 )
-from backend.app.utils.filament_types import nozzle_temp_range, printer_filament_type
+from backend.app.utils.filament_types import nozzle_temp_range, printer_filament_type, support_filament_type
+from backend.app.utils.tray_ids import external_tray_id
 
 logger = logging.getLogger(__name__)
 
@@ -506,6 +514,11 @@ class SpoolSlotAssignmentRequest(BaseModel):
     # transaction (#1574): a scanned spool is the one in the user's hand.
     move: bool = False
 
+    @model_validator(mode="after")
+    def a_real_slot(self) -> SpoolSlotAssignmentRequest:
+        check_slot_tray_id(self.ams_id, self.tray_id)
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -861,10 +874,9 @@ async def update_spool(
     cur_vendor: dict = cur_filament.get("vendor") or {}
     cur_mat: str = (cur_filament.get("material") or "").strip()
     cur_name: str = (cur_filament.get("name") or "").strip()
-    if cur_mat and cur_name.upper().startswith(cur_mat.upper()):
-        cur_subtype: str = cur_name[len(cur_mat) :].strip()
-    else:
-        cur_subtype = cur_name
+    # Read the same way the inventory shows it, so an untouched subtype is
+    # recognised as untouched below (#3561).
+    cur_subtype: str = split_spoolman_filament_name(cur_mat, cur_name)[0] or ""
 
     # Resolve final values: use request value if provided, else keep current
     material = data.material if data.material is not None else cur_mat
@@ -932,6 +944,12 @@ async def update_spool(
     # filament in place when it's a singleton.
     cur_filament_id = cur_filament.get("id")
     desired_name = f"{material} {subtype}".strip() if subtype else material
+    # The filament keeps the name it has unless its material or subtype was
+    # actually changed. The name is the user's own wording in Spoolman --
+    # "Matte Scarlet Red" carries the colour too -- and rebuilding it from the
+    # two fields renamed it on every save of anything at all (#3561).
+    if cur_name and material.strip() == cur_mat and (subtype or "").strip() == cur_subtype:
+        desired_name = cur_name
     # Compare the stored shapes, not raw strings and not bare RGB prefixes. Raw
     # strings make an opaque spool's six characters differ from an incoming eight
     # and PATCH the filament on every no-op edit; bare prefixes make an
@@ -1720,6 +1738,7 @@ async def get_all_spoolman_slot_assignments(
                 tray_id=s.tray_id,
                 spoolman_spool_id=s.spoolman_spool_id,
                 ams_label=_ams_label_for(s.printer_id, s.ams_id),
+                printer_model=s.printer.model if s.printer else None,
             )
         )
     return enriched
@@ -1883,7 +1902,7 @@ def _live_slot_tray(state, ams_id: int, tray_id: int) -> dict:
     if ams_id == 255:
         vt_trays = raw.get("vt_tray") or []
         for vt in [vt_trays] if isinstance(vt_trays, dict) else vt_trays:
-            if isinstance(vt, dict) and str(vt.get("id", 254)) == str(254 + tray_id):
+            if isinstance(vt, dict) and str(vt.get("id", 254)) == str(external_tray_id(tray_id)):
                 return vt
         return {}
     units = raw.get("ams") or []
@@ -2101,6 +2120,10 @@ async def assign_spoolman_slot(
             # spool has one (issue #2902, @doncaruana).
             if type_override:
                 tray_type = printer_filament_type(type_override)
+            # A support material keeps the slicer's suffix ("PLA-S") (#3559).
+            tray_type = support_filament_type(
+                tray_type, tray_info_idx, f"{slot_slicer_filament_name or ''} {tray_sub_brands}"
+            )
 
             material_upper = material.upper().strip()
             # Without a preset, the slot's own filament id where it fits, as in

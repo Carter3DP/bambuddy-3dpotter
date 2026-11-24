@@ -501,6 +501,13 @@ class AppSettings(BaseModel):
     )
     queue_forecast_gap_minutes: int = Field(default=5, ge=0, le=1440)
     queue_working_hours: WorkingHours = Field(default_factory=lambda: WorkingHours.from_storage(None))
+    model_dispatch_order: Literal["fewest_hours", "most_hours", "least_recently_used", "priority"] = Field(
+        default="fewest_hours",
+        description=(
+            "Which printer an 'Any model' job takes when several can run it (#2915): the one with the fewest "
+            "print hours, the most, the one idle the longest, or the first by the printers' own priority."
+        ),
+    )
     queue_max_concurrent_uploads: int = Field(
         default=4,
         ge=1,
@@ -857,6 +864,7 @@ class AppSettingsUpdate(BaseModel):
     # Capped by camera_light.MAX_DELAY_SECONDS: the finish photo's budget
     # has no more to spare.
     camera_light_delay: float | None = Field(default=None, ge=0, le=5)
+    model_dispatch_order: Literal["fewest_hours", "most_hours", "least_recently_used", "priority"] | None = None
     preferred_slicer: str | None = None
     open_in_slicer: str | None = None
     slice_engine: str | None = None

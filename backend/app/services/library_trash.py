@@ -251,8 +251,6 @@ class LibraryTrashService:
         if marker.is_symlink():
             raise HTTPException(status_code=409, detail="Invalid trash folder marker")
         if not marker.is_file():
-            if any(trash.iterdir()):
-                raise HTTPException(status_code=409, detail="Choose an empty folder for linked-drive trash")
             marker.touch(exist_ok=True)
 
         entry = trash / uuid.uuid4().hex
