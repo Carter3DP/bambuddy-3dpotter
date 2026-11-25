@@ -9455,6 +9455,11 @@ export const multiVirtualPrinterApi = {
   getCaCertificate: () =>
     request<VPCaCertificate>('/virtual-printers/ca-certificate'),
 
+  // A script that adds the CA to Bambu Studio and OrcaSlicer, with the CA
+  // written into it: 'windows' (.cmd) or 'unix' (.sh, Linux and macOS).
+  getCaCertificateInstaller: (platform: 'windows' | 'unix') =>
+    request<{ filename: string; content: string }>(`/virtual-printers/ca-certificate/installer/${platform}`),
+
   diagnose: (id: number) =>
     request<VPDiagnosticResult>(`/virtual-printers/${id}/diagnostic`),
 };

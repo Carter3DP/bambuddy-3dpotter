@@ -11,6 +11,12 @@ import { copyTextToClipboard, downloadTextFile } from '../utils/clipboard';
 import { VirtualPrinterCard } from './VirtualPrinterCard';
 import { VirtualPrinterAddDialog } from './VirtualPrinterAddDialog';
 
+// Operating system names, the same in every language.
+const INSTALLER_PLATFORMS = [
+  ['windows', 'Windows'],
+  ['unix', 'Linux / macOS'],
+] as const;
+
 export function VirtualPrinterList() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -66,6 +72,19 @@ export function VirtualPrinterList() {
   const handleDownloadCert = () => {
     if (!caCert) return;
     downloadTextFile(caCert.pem, 'bambuddy-virtual-printer-ca.crt', 'application/x-pem-file');
+  };
+
+  const [installerPending, setInstallerPending] = useState<'windows' | 'unix' | null>(null);
+  const handleDownloadInstaller = async (platform: 'windows' | 'unix') => {
+    setInstallerPending(platform);
+    try {
+      const installer = await multiVirtualPrinterApi.getCaCertificateInstaller(platform);
+      downloadTextFile(installer.content, installer.filename, 'application/octet-stream');
+    } catch (error) {
+      showToast((error as Error).message || t('virtualPrinter.caCert.installerFailed', 'Could not create the script'), 'error');
+    } finally {
+      setInstallerPending(null);
+    }
   };
 
   if (isLoading) {
@@ -159,6 +178,25 @@ export function VirtualPrinterList() {
                 </div>
                 <p className="text-xs text-bambu-gray mt-1">
                   {t('virtualPrinter.caCert.description')}
+                </p>
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  <span className="text-xs text-white">{t('virtualPrinter.caCert.installerTitle', 'Add the certificate to your slicer')}</span>
+                  {INSTALLER_PLATFORMS.map(([platform, label]) => (
+                    <button
+                      key={platform}
+                      onClick={() => handleDownloadInstaller(platform)}
+                      disabled={installerPending !== null}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded bg-bambu-dark-secondary border border-bambu-dark-tertiary text-white hover:border-bambu-gray disabled:opacity-50 transition-colors"
+                    >
+                      {installerPending === platform
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <Download className="w-3.5 h-3.5" />}
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-bambu-gray mt-1">
+                  {t('virtualPrinter.caCert.installerHint', 'Download the script for Bambu Studio or OrcaSlicer. On Windows, double-click it and approve the prompt. On Linux or macOS, run it with Bash and repeat after a slicer update.')}
                 </p>
                 {caCert && (
                   <p

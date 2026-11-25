@@ -65,3 +65,7 @@ In **Settings → General → File Manager**, set the trash folder name (default
 The trash retention field uses the shared number input and saves valid changes immediately, including changes made with its increment and decrement arrows.
 
 The configured trash folder may already contain files. Bambuddy stores each deleted file in a unique subfolder and expires only its tracked trash entries.
+
+## Virtual printer certificate installer
+
+In **Settings → Virtual Printer → Slicer certificate**, download the Windows or Linux / macOS script to add this Bambuddy instance’s certificate to Bambu Studio or OrcaSlicer. Run it on the slicer computer. Windows reapplies the certificate after updates via a scheduled task. On Linux and macOS, run the script again after a slicer update.
