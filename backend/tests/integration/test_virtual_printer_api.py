@@ -417,6 +417,30 @@ class TestVirtualPrinterCaCertificateAPI:
         # A 200 (not 422 from int-parsing "ca-certificate") proves route ordering.
         assert response.status_code == 200
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(("platform", "filename"), [("windows", ".cmd"), ("unix", ".sh")])
+    async def test_installer_carries_this_instance_ca(self, async_client: AsyncClient, platform, filename):
+        ca = (await async_client.get("/api/v1/virtual-printers/ca-certificate")).json()
+
+        response = await async_client.get(f"/api/v1/virtual-printers/ca-certificate/installer/{platform}")
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["filename"].endswith(filename)
+        body = ca["pem"].strip().splitlines()[1]
+        assert body in result["content"]
+        assert ca["fingerprint_sha256"] in result["content"]
+        assert "__BAMBUDDY_" not in result["content"]
+        assert "PRIVATE KEY" not in result["content"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_installer_for_an_unknown_platform_is_404(self, async_client: AsyncClient):
+        response = await async_client.get("/api/v1/virtual-printers/ca-certificate/installer/amiga")
+
+        assert response.status_code == 404
+
 
 class TestVirtualPrinterDiagnosticAPI:
     """Integration tests for GET /api/v1/virtual-printers/{vp_id}/diagnostic."""

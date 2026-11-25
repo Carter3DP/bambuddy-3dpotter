@@ -327,6 +327,34 @@ async def get_ca_certificate(
         return JSONResponse(status_code=500, content={"detail": "Could not generate the CA certificate"})
 
 
+@router.get("/ca-certificate/installer/{platform}")
+async def get_ca_certificate_installer(
+    platform: str,
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_READ),
+):
+    """Return a script that adds the CA to Bambu Studio and OrcaSlicer.
+
+    ``platform`` is ``windows`` (a .cmd) or ``unix`` (a .sh for Linux and
+    macOS). The CA is written into the script, which then needs no access to
+    Bambuddy. Returns ``{"filename", "content"}``.
+    """
+    from backend.app.services.virtual_printer import virtual_printer_manager
+    from backend.app.services.virtual_printer.slicer_cert_installer import (
+        INSTALLER_PLATFORMS,
+        build_slicer_cert_installer,
+    )
+
+    if platform not in INSTALLER_PLATFORMS:
+        return JSONResponse(status_code=404, content={"detail": f"Unknown platform '{platform}'"})
+    try:
+        info = virtual_printer_manager.get_ca_certificate_info()
+    except Exception as e:
+        logger.error("Failed to obtain virtual printer CA certificate: %s", e)
+        return JSONResponse(status_code=500, content={"detail": "Could not generate the CA certificate"})
+    installer = build_slicer_cert_installer(platform, info["pem"], info["fingerprint_sha256"])
+    return {"filename": installer.filename, "content": installer.content}
+
+
 @router.get("/{vp_id}/diagnostic", response_model=VPDiagnosticResult)
 async def diagnose_virtual_printer(
     vp_id: int,
